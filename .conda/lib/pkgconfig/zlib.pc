@@ -1,0 +1,13 @@
+prefix=/Users/yoosehyeok/Documents/CG_VTK/.conda
+exec_prefix=/Users/yoosehyeok/Documents/CG_VTK/.conda
+libdir=/Users/yoosehyeok/Documents/CG_VTK/.conda/lib
+sharedlibdir=/Users/yoosehyeok/Documents/CG_VTK/.conda/lib
+includedir=/Users/yoosehyeok/Documents/CG_VTK/.conda/include
+
+Name: zlib
+Description: zlib compression library
+Version: 1.2.13
+
+Requires:
+Libs: -L${libdir} -L${sharedlibdir} -lz
+Cflags: -I${includedir}

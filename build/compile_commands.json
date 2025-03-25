@@ -1,0 +1,8 @@
+[
+{
+  "directory": "/Users/yoosehyeok/Documents/CG_VTK/build",
+  "command": "/Library/Developer/CommandLineTools/usr/bin/c++ -DGLAD_API_CALL_EXPORT -DGL_SILENCE_DEPRECATION -Dkiss_fft_scalar=double -DvtkRenderingContext2D_AUTOINIT_INCLUDE=\\\"/Users/yoosehyeok/Documents/CG_VTK/build/CMakeFiles/vtkModuleAutoInit_04d683062bbc5774e34e8c62b13e1a5a.h\\\" -DvtkRenderingCore_AUTOINIT_INCLUDE=\\\"/Users/yoosehyeok/Documents/CG_VTK/build/CMakeFiles/vtkModuleAutoInit_04d683062bbc5774e34e8c62b13e1a5a.h\\\" -DvtkRenderingOpenGL2_AUTOINIT_INCLUDE=\\\"/Users/yoosehyeok/Documents/CG_VTK/build/CMakeFiles/vtkModuleAutoInit_04d683062bbc5774e34e8c62b13e1a5a.h\\\" -isystem /opt/homebrew/include/vtk-9.4 -isystem /opt/homebrew/include/vtk-9.4/token -isystem /opt/homebrew/include -isystem /opt/homebrew/include/vtk-9.4/vtkkissfft -isystem /opt/homebrew/include/freetype2 -isystem /opt/homebrew/include/vtk-9.4/vtkglad -g -std=gnu++11 -arch arm64 -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX15.2.sdk -o CMakeFiles/Tutorial_Step6.dir/Tutorial_Step6.cxx.o -c /Users/yoosehyeok/Documents/CG_VTK/Tutorial_Step6/Tutorial_Step6.cxx",
+  "file": "/Users/yoosehyeok/Documents/CG_VTK/Tutorial_Step6/Tutorial_Step6.cxx",
+  "output": "CMakeFiles/Tutorial_Step6.dir/Tutorial_Step6.cxx.o"
+}
+]
