@@ -1,4 +1,10 @@
 {
     "cmake.sourceDirectory": "/Users/yoosehyeok/Documents/CG_VTK/Tutorial_Step6",
-    "github-enterprise.uri": "https://gitlab.kitware.com"
+    "github-enterprise.uri": "https://gitlab.kitware.com",
+    "python.analysis.typeCheckingMode": "basic",
+    "remote.extensionKind": {
+      "GitHub.copilot-chat": ["ui"],
+      "GitHub.copilot": ["ui"],
+      "pub.name": ["ui"]
+    }
 }

@@ -1,0 +1,3 @@
+/Users/yoosehyeok/Documents/CG_VTK/rainbow/build/CMakeFiles/Rainbow.dir
+/Users/yoosehyeok/Documents/CG_VTK/rainbow/build/CMakeFiles/edit_cache.dir
+/Users/yoosehyeok/Documents/CG_VTK/rainbow/build/CMakeFiles/rebuild_cache.dir
