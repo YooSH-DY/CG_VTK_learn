@@ -6,5 +6,10 @@
       "GitHub.copilot-chat": ["ui"],
       "GitHub.copilot": ["ui"],
       "pub.name": ["ui"]
-    }
+    },
+    "python.testing.pytestArgs": [
+      "."
+    ],
+    "python.testing.unittestEnabled": false,
+    "python.testing.pytestEnabled": true
 }

@@ -9,6 +9,132 @@ import time
 import vtkmodules.vtkInteractionStyle
 import vtkmodules.vtkRenderingOpenGL2
 
+
+# 쿼터니언 관련 유틸리티 함수 추가
+def quaternion_to_euler(w, x, y, z):
+    """쿼터니언(w, x, y, z)을 오일러 각도(도)로 변환"""
+    # Roll (x축 회전)
+    sinr_cosp = 2 * (w * x + y * z)
+    cosr_cosp = 1 - 2 * (x * x + y * y)
+    roll = math.atan2(sinr_cosp, cosr_cosp)
+
+    # Pitch (y축 회전)
+    sinp = 2 * (w * y - z * x)
+    if abs(sinp) >= 1:
+        pitch = math.copysign(math.pi / 2, sinp)  # 범위를 벗어나면 90도 사용
+    else:
+        pitch = math.asin(sinp)
+
+    # Yaw (z축 회전)
+    siny_cosp = 2 * (w * z + x * y)
+    cosy_cosp = 1 - 2 * (y * y + z * z)
+    yaw = math.atan2(siny_cosp, cosy_cosp)
+
+    # 라디안에서 도(degree)로 변환
+    roll = math.degrees(roll)
+    pitch = math.degrees(pitch)
+    yaw = math.degrees(yaw)
+
+    return roll, pitch, yaw
+
+
+def quaternion_to_matrix(w, x, y, z):
+    """쿼터니언을 VTK 행렬로 변환"""
+    matrix = vtk.vtkMatrix4x4()
+
+    # 쿼터니언에서 행렬 요소 계산
+    xx = x * x
+    xy = x * y
+    xz = x * z
+    xw = x * w
+
+    yy = y * y
+    yz = y * z
+    yw = y * w
+
+    zz = z * z
+    zw = z * w
+
+    # 회전 행렬 설정 (3x3 부분)
+    matrix.SetElement(0, 0, 1 - 2 * (yy + zz))
+    matrix.SetElement(0, 1, 2 * (xy - zw))
+    matrix.SetElement(0, 2, 2 * (xz + yw))
+
+    matrix.SetElement(1, 0, 2 * (xy + zw))
+    matrix.SetElement(1, 1, 1 - 2 * (xx + zz))
+    matrix.SetElement(1, 2, 2 * (yz - xw))
+
+    matrix.SetElement(2, 0, 2 * (xz - yw))
+    matrix.SetElement(2, 1, 2 * (yz + xw))
+    matrix.SetElement(2, 2, 1 - 2 * (xx + yy))
+
+    # 이동 요소는 0으로 설정
+    matrix.SetElement(0, 3, 0)
+    matrix.SetElement(1, 3, 0)
+    matrix.SetElement(2, 3, 0)
+    matrix.SetElement(3, 0, 0)
+    matrix.SetElement(3, 1, 0)
+    matrix.SetElement(3, 2, 0)
+    matrix.SetElement(3, 3, 1)
+
+    return matrix
+
+
+def apply_quaternion_to_transform(transform, w, x, y, z):
+    """쿼터니언 회전을 VTK 변환 객체에 적용"""
+    # 쿼터니언을 행렬로 변환
+    matrix = quaternion_to_matrix(w, x, y, z)
+
+    # 변환 객체에 행렬 적용
+    transform.SetMatrix(matrix)
+
+    return transform
+
+
+# 쿼터니언 관련 추가 유틸리티 함수
+def quaternion_multiply(q1, q2):
+    """두 쿼터니언 q1, q2의 곱을 계산"""
+    w1, x1, y1, z1 = q1
+    w2, x2, y2, z2 = q2
+
+    w = w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2
+    x = w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2
+    y = w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2
+    z = w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2
+
+    return w, x, y, z
+
+
+def quaternion_inverse(q):
+    """쿼터니언의 역(inverse)을 계산"""
+    w, x, y, z = q
+    norm_sq = w * w + x * x + y * y + z * z
+
+    if norm_sq < 1e-10:  # 0에 가까운 경우 처리
+        return 1, 0, 0, 0
+
+    inv_norm_sq = 1.0 / norm_sq
+    return w * inv_norm_sq, -x * inv_norm_sq, -y * inv_norm_sq, -z * inv_norm_sq
+
+
+def get_relative_quaternion(initial_q, current_q):
+    """초기 쿼터니언 기준 현재 쿼터니언의 상대적 회전 계산"""
+    inv_initial = quaternion_inverse(
+        (initial_q["w"], initial_q["x"], initial_q["y"], initial_q["z"])
+    )
+    current = (current_q["w"], current_q["x"], current_q["y"], current_q["z"])
+
+    # 초기 쿼터니언의 역(inverse)과 현재 쿼터니언을 곱해 상대 회전 계산
+    relative_q = quaternion_multiply(current, inv_initial)
+
+    return {
+        "w": relative_q[0],
+        "x": relative_q[1],
+        "y": relative_q[2],
+        "z": relative_q[3],
+    }
+
+
 from vtkmodules.vtkCommonColor import vtkNamedColors
 from vtkmodules.vtkCommonDataModel import vtkQuadric
 from vtkmodules.vtkFiltersCore import vtkContourFilter, vtkAppendFilter
@@ -25,9 +151,14 @@ from vtkmodules.vtkRenderingCore import (
     vtkRenderWindow,
     vtkRenderWindowInteractor,
 )
-from vtkmodules.vtkFiltersSources import vtkCubeSource, vtkSphereSource
+from vtkmodules.vtkFiltersSources import (
+    vtkCubeSource,
+    vtkSphereSource,
+    vtkSuperquadricSource,
+)
 from vtkmodules.vtkInteractionStyle import vtkInteractorStyleTrackballCamera
-
+from vtkmodules.vtkFiltersGeneral import vtkTransformPolyDataFilter
+from vtkmodules.vtkFiltersCore import vtkAppendPolyData
 
 # 전역 변수 설정
 colors = vtkNamedColors()
@@ -37,6 +168,9 @@ render_window = None  # 렌더윈도우 전역 참조
 interactor = None  # 인터랙터 전역 참조
 joint_actors = []  # 손가락 관절 액터 저장 리스트
 hand_joint_transforms = []  # 손가락 관절 트랜스폼 글로벌 참조
+initial_quaternion_dot1 = {"w": 1, "x": 0, "y": 0, "z": 0}  # DOT1 초기 쿼터니언
+initial_quaternion_dot2 = {"w": 1, "x": 0, "y": 0, "z": 0}  # DOT2 초기 쿼터니언
+is_calibrated = False  # 캘리브레이션 상태 플래그
 
 
 def create_quadric_visualization(colors):
@@ -128,6 +262,53 @@ def create_planes(func, actor, numberOfPlanes):
     return
 
 
+def create_capsule(height=0.2, radius=0.05, color=(0.8, 0.7, 0.6), transform=None):
+    """캡슐(원통 + 양 끝 구) 형태 생성"""
+    # 1) Cylinder body
+    cylinder = vtk.vtkCylinderSource()
+    cylinder.SetRadius(radius)
+    cylinder.SetHeight(height)
+    cylinder.SetResolution(36)
+
+    # 2) Sphere ends
+    sphere_top = vtk.vtkSphereSource()
+    sphere_top.SetRadius(radius)
+    sphere_top.SetThetaResolution(36)
+    sphere_top.SetPhiResolution(36)
+    tf_top = vtk.vtkTransform()
+    tf_top.Translate(0, height / 2, 0)
+    tpf_top = vtkTransformPolyDataFilter()
+    tpf_top.SetTransform(tf_top)
+    tpf_top.SetInputConnection(sphere_top.GetOutputPort())
+
+    sphere_bot = vtk.vtkSphereSource()
+    sphere_bot.SetRadius(radius)
+    sphere_bot.SetThetaResolution(36)
+    sphere_bot.SetPhiResolution(36)
+    tf_bot = vtk.vtkTransform()
+    tf_bot.Translate(0, -height / 2, 0)
+    tpf_bot = vtkTransformPolyDataFilter()
+    tpf_bot.SetTransform(tf_bot)
+    tpf_bot.SetInputConnection(sphere_bot.GetOutputPort())
+
+    # 3) Append all
+    appender = vtkAppendPolyData()
+    appender.AddInputConnection(cylinder.GetOutputPort())
+    appender.AddInputConnection(tpf_top.GetOutputPort())
+    appender.AddInputConnection(tpf_bot.GetOutputPort())
+    appender.Update()
+
+    # 4) Mapper + Actor
+    mapper = vtk.vtkPolyDataMapper()
+    mapper.SetInputConnection(appender.GetOutputPort())
+    actor = vtk.vtkActor()
+    actor.SetMapper(mapper)
+    if transform:
+        actor.SetUserTransform(transform)
+    actor.GetProperty().SetColor(color)
+    return actor, appender, transform
+
+
 def create_contours(func, actor, numberOfPlanes, numberOfContours):
     # Extract planes from implicit function
     append = vtkAppendFilter()
@@ -187,6 +368,11 @@ def create_joint(radius=0.025, color=(0.1, 0.9, 0.2), transform=None):
 def create_phalanx(
     width=0.15, height=0.2, depth=0.1, color=(0.8, 0.7, 0.6), transform=None
 ):
+    # 캡슐 반지름은 너비의 절반 정도로 설정
+    radius = width / 2
+    return create_capsule(
+        height=height, radius=radius, color=color, transform=transform
+    )
     source = vtk.vtkCubeSource()
     source.SetXLength(width)
     source.SetYLength(height)
@@ -201,21 +387,29 @@ def create_phalanx(
     return actor, source, transform
 
 
-# 손바닥 생성 함수
 def create_palm(
-    width=0.8, height=0.6, depth=0.15, color=(0.8, 0.7, 0.6), transform=None
+    width=1.7, height=0.4, depth=1.3, color=(0.8, 0.7, 0.6), transform=None
 ):
-    source = vtk.vtkCubeSource()
-    source.SetXLength(width)
-    source.SetYLength(height)
-    source.SetZLength(depth)
+    """둥근 모서리(rounded box) 형태의 손바닥 생성"""
+    source = vtkSuperquadricSource()
+    source.SetToroidal(0)  # 토러스가 아닌 일반 슈퍼쿼드릭
+    source.SetPhiRoundness(0.8)  # φ 방향 라운딩 정도 (0.1~2.0)
+    source.SetThetaRoundness(0.8)  # θ 방향 라운딩 정도
+    source.SetThickness(0.8)  # 필렛(모서리 둥글기) 정도
+    # 슈퍼쿼드릭 기본 크기는 [-1,1] 범위이므로 절반 값으로 스케일
+    source.SetScale(width / 2, height / 2, depth / 2)
+    source.SetPhiResolution(32)  # 더 부드러운 표면을 위한 해상도
+    source.SetThetaResolution(32)
+
     mapper = vtk.vtkPolyDataMapper()
     mapper.SetInputConnection(source.GetOutputPort())
+
     actor = vtk.vtkActor()
     actor.SetMapper(mapper)
     if transform:
         actor.SetUserTransform(transform)
     actor.GetProperty().SetColor(color)
+
     return actor, source, transform
 
 
@@ -346,27 +540,46 @@ class MouseInteractorHighLightActor(vtk.vtkInteractorStyleTrackballCamera):
 
 
 def create_hand_actors():
-    global joint_actors, palm_transform  # palm_transform을 전역으로 추가
+    global joint_actors, palm_transform
 
     all_actors = []
 
-    # 손바닥 생성
+    # 손바닥 생성 - 초기 상태를 수평으로 설정
     palm_transform = vtk.vtkTransform()
+    # 기울어짐 보정
+    transform(
+        palm_transform, rotate=(0, 0, -45)
+    )  # Z축 -45도로 수정하여 대각선 기울기 제거
+
+    # 손바닥이 수평이 되도록 X축으로 -90도 회전
+    transform(palm_transform, rotate=(-90, 0, 0))
     palm_actor, palm_source, _ = create_palm(transform=palm_transform)
     all_actors.append(palm_actor)
 
-    # 손가락 위치 및 각도 - 엄지가 바깥을 향하도록 수정
+    # 왼손
+    # finger_positions = [
+    #     # 엄지 위치
+    #     {"pos": (0.4, 0.05, -0.0), "angle": (0, 20, -30)},  # 각도도 반전
+    #     # 검지 위치
+    #     {"pos": (0.25, 0.31, 0.0), "angle": (0, 0, 0)},
+    #     # 중지 위치
+    #     {"pos": (0.06, 0.31, 0.0), "angle": (0, 0, 0)},
+    #     # 약지 위치
+    #     {"pos": (-0.12, 0.31, 0.0), "angle": (0, 0, 0)},
+    #     # 소지 위치
+    #     {"pos": (-0.3, 0.31, 0.0), "angle": (0, 0, 0)},
+    # ]
     finger_positions = [
         # 엄지 위치
-        {"pos": (0.4, 0.05, -0.0), "angle": (0, 20, -30)},  # 각도도 반전
+        {"pos": (-0.38, 0.05, -0.0), "angle": (0, 20, 30)},  # 각도 방향 변경
         # 검지 위치
-        {"pos": (0.25, 0.31, 0.0), "angle": (0, 0, 0)},
+        {"pos": (-0.25, 0.28, 0.0), "angle": (0, 0, 0)},
         # 중지 위치
-        {"pos": (0.06, 0.31, 0.0), "angle": (0, 0, 0)},
+        {"pos": (-0.06, 0.31, 0.0), "angle": (0, 0, 0)},
         # 약지 위치
-        {"pos": (-0.12, 0.31, 0.0), "angle": (0, 0, 0)},
+        {"pos": (0.12, 0.28, 0.0), "angle": (0, 0, 0)},
         # 소지 위치
-        {"pos": (-0.3, 0.31, 0.0), "angle": (0, 0, 0)},
+        {"pos": (0.3, 0.24, 0.0), "angle": (0, 0, 0)},
     ]
 
     # 관절 반지름
@@ -395,7 +608,11 @@ def create_hand_actors():
         finger_actors.append([(joint0_actor, joint0_transform)])
 
         # 첫 번째 마디 생성
-        height1 = 0.15 if finger_idx == 0 else 0.18
+        height1 = (
+            0.15
+            if finger_idx == 0
+            else (0.2 if finger_idx == 2 else (0.15 if finger_idx == 4 else 0.18))
+        )
         width1 = 0.12
         phalanx1_transform = vtk.vtkTransform()
         phalanx1_transform.SetInput(joint0_transform)
@@ -420,7 +637,11 @@ def create_hand_actors():
         finger_actors.append([(joint1_actor, joint1_transform)])
 
         # 두 번째 마디 생성
-        height2 = 0.12 if finger_idx == 0 else 0.15
+        height2 = (
+            0.12
+            if finger_idx == 0
+            else (0.17 if finger_idx == 2 else (0.13 if finger_idx == 4 else 0.15))
+        )
         width2 = 0.11
         phalanx2_transform = vtk.vtkTransform()
         phalanx2_transform.SetInput(joint1_transform)
@@ -445,7 +666,11 @@ def create_hand_actors():
         finger_actors.append([(joint2_actor, joint2_transform)])
 
         # 세 번째 마디 생성
-        height3 = 0.1 if finger_idx == 0 else 0.12
+        height3 = (
+            0.1
+            if finger_idx == 0
+            else (0.14 if finger_idx == 2 else (0.09 if finger_idx == 4 else 0.12))
+        )
         width3 = 0.1
         phalanx3_transform = vtk.vtkTransform()
         phalanx3_transform.SetInput(joint2_transform)
@@ -500,56 +725,201 @@ def animate_fingers(joint_transforms, render_window):
 # 타이머 콜백 함수 - DOT2 센서의 Roll 값에 따라 손가락 관절 제어
 def timer_callback(obj, event):
     global hand_joint_transforms, render_window, joint_actors, palm_transform
-
-    # 연결 상태 확인 (last_data_time 사용)
+    global initial_quaternion_dot1, initial_quaternion_dot2, is_calibrated
+    initial_relative_dot2_to_dot1 = {
+        "w": 1,
+        "x": 0,
+        "y": 0,
+        "z": 0,
+    }  # 두 센서 간 초기 상대 관계
+    # 연결 상태 확인
     current_time = time.time()
     last_data_time = getattr(websocket_client, "last_data_time", 0)
 
-    # DOT1 센서 Roll 값으로 손바닥 제어
-    roll_value_dot1 = websocket_client.dot_data["DOT1"]["roll"]
+    # DOT1 센서에서 쿼터니언 데이터 가져오기 (손등 센서)
+    dot1_data = websocket_client.dot_data["DOT1"]
+    w_dot1 = dot1_data["w"]
+    x_dot1 = dot1_data["x"]
+    y_dot1 = dot1_data["y"]
+    z_dot1 = dot1_data["z"]
 
-    # 기본 자세는 수직(90도)
-    palm_angle = 90
+    # DOT2 센서에서 쿼터니언 데이터 가져오기 (손가락 센서)
+    dot2_data = websocket_client.dot_data["DOT2"]
+    w_dot2 = dot2_data["w"]
+    x_dot2 = dot2_data["x"]
+    y_dot2 = dot2_data["y"]
+    z_dot2 = dot2_data["z"]
 
-    # Roll 값의 부호에 따라 처리 - 방향 반전
-    if roll_value_dot1 < 0:  # 음수일 때 - 뒤로 꺾임 (90도에서 최대 40도까지)
-        # roll 값이 -80에 가까울수록 더 많이 꺾임
-        max_backward_bend = 40  # 최대 뒤로 40도
-        backward_bend = min(max_backward_bend, abs(roll_value_dot1) * (40 / 80))
-        palm_angle = 90 - backward_bend  # 90도(수직)에서 최소 50도까지
-    else:  # 양수일 때 - 앞으로 꺾임 (최대 90도)
-        max_forward_bend = 90  # 최대 앞으로 90도
-        forward_bend = min(max_forward_bend, roll_value_dot1 * (90 / 80))
-        palm_angle = 90 + forward_bend  # 90도(수직)에서 최대 180도까지
+    # 데이터가 유효한지 확인
+    valid_dot1_data = w_dot1 != 0 or x_dot1 != 0 or y_dot1 != 0 or z_dot1 != 0
+    valid_dot2_data = w_dot2 != 0 or x_dot2 != 0 or y_dot2 != 0 or z_dot2 != 0
 
-    # 손바닥 변환 초기화 및 회전 적용
-    palm_transform.Identity()
-    # X축 회전으로 손바닥을 앞뒤로 꺾음
-    transform(palm_transform, rotate=(palm_angle, 0, 0))
+    # 초기 캘리브레이션 수행 부분 수정 (739번 줄 근처)
+    if not is_calibrated and valid_dot1_data and valid_dot2_data:
+        # 초기값 저장
+        initial_quaternion_dot1 = dot1_data.copy()
+        initial_quaternion_dot2 = dot2_data.copy()
 
-    # DOT2 센서 Roll 값으로 손가락 제어 (기존 코드)
-    roll_value_dot2 = websocket_client.dot_data["DOT2"]["roll"]
-    normalized_roll_dot2 = websocket_client.get_normalized_roll(roll_value_dot2)
-    target_angle = -normalized_roll_dot2
+        # 두 센서 사이의 초기 상대적 회전 계산
+        # 손등 센서의 역회전 계산
+        dot1_initial_inv = quaternion_inverse(
+            (
+                initial_quaternion_dot1["w"],
+                initial_quaternion_dot1["x"],
+                initial_quaternion_dot1["y"],
+                initial_quaternion_dot1["z"],
+            )
+        )
 
-    # 손가락 위치 정보 (create_hand_actors 함수의 값과 동일하게 설정)
+        # 손가락 센서의 초기 회전
+        dot2_initial = (
+            initial_quaternion_dot2["w"],
+            initial_quaternion_dot2["x"],
+            initial_quaternion_dot2["y"],
+            initial_quaternion_dot2["z"],
+        )
+
+        # 초기 상대 회전 (손등 기준 손가락의 초기 상태)
+        initial_relative = quaternion_multiply(dot2_initial, dot1_initial_inv)
+        initial_relative_dot2_to_dot1 = {
+            "w": initial_relative[0],
+            "x": initial_relative[1],
+            "y": initial_relative[2],
+            "z": initial_relative[3],
+        }
+
+        is_calibrated = True
+        print("센서 초기 위치 캘리브레이션 완료!")
+        print(
+            f"DOT1 초기값: w={w_dot1:.4f}, x={x_dot1:.4f}, y={y_dot1:.4f}, z={z_dot1:.4f}"
+        )
+        print(
+            f"DOT2 초기값: w={w_dot2:.4f}, x={x_dot2:.4f}, y={y_dot2:.4f}, z={z_dot2:.4f}"
+        )
+        print(
+            f"상대 회전: w={initial_relative[0]:.4f}, x={initial_relative[1]:.4f}, y={initial_relative[2]:.4f}, z={initial_relative[3]:.4f}"
+        )
+        return  # 첫 번째 프레임에서는 모델 업데이트 없이 종료
+
+    # 캘리브레이션된 경우 상대 회전으로 보정
+    if is_calibrated and valid_dot1_data:
+        # 보정된 값을 사용하므로 상대적 쿼터니언 재계산 불필요
+
+        # 안정화 영역 설정 - 미세 움직임을 무시하는 데드존 추가
+        dead_zone = 0.01  # 데드존 크기 조정
+        if (
+            abs(dot1_data["x"]) < dead_zone
+            and abs(dot1_data["y"]) < dead_zone
+            and abs(dot1_data["z"]) < dead_zone
+        ):
+            # 작은 값은 무시하고 초기 자세로 유지
+            adjusted_q = {"w": 1, "x": 0, "y": 0, "z": 0}
+        else:
+            # 좌표계 변환을 위한 축 매핑 조정
+            adjusted_q = {
+                "w": dot1_data["w"],
+                "x": -dot1_data["y"],  # 센서 Y축 → 모델 X축
+                "y": dot1_data["x"],  # 센서 X축 → 모델 Y축
+                "z": dot1_data["z"],  # Z축은 부호 반전
+            }
+
+    if is_calibrated and valid_dot2_data:
+        # 상대 회전 계산하여 원본 데이터 업데이트
+        dot2_data = get_relative_quaternion(initial_quaternion_dot2, dot2_data)
+
+    # 캘리브레이션이 완료되고 유효한 데이터가 있을 때만 처리
+    if is_calibrated and valid_dot1_data:
+        # 손바닥 초기화 및 기본 위치/회전 설정
+        palm_transform.Identity()
+        transform(palm_transform, rotate=(0, 0, 0))  # Z축 -45도로 수정
+        # 손바닥 중심점 계산 - 엄지와 소지 사이의 중간점 추정
+        # 오른손 기준으로 손바닥 중심을 계산 (오른손의 경우 x=0 정도가 중심)
+        hand_center_x = 0.0  # 손바닥 중심의 x 좌표
+        hand_center_y = 0.15  # 손바닥 중심의 y 좌표
+        hand_center_z = 0.0  # 손바닥 중심의 z 좌표
+
+        # 1. 먼저 손바닥 중심으로 이동
+        palm_transform.Translate(hand_center_x, hand_center_y, hand_center_z)
+
+        # 2. 쿼터니언 회전 적용
+        # 좌표계 변환을 위한 축 매핑 조정
+        adjusted_q = {
+            "w": dot1_data["w"],
+            "x": -dot1_data["y"],  # 센서 Y축 → 모델 X축
+            "y": dot1_data["x"],  # 센서 X축 → 모델 Y축
+            "z": dot1_data["z"],  # Z축은 부호 반전
+        }
+
+        # 기본 X축 -90도 회전을 쿼터니언으로 표현
+        base_q = {"w": 0.7071, "x": -0.7071, "y": 0, "z": 0}
+
+        # 두 쿼터니언을 곱하여 하나의 회전으로 통합
+        combined_q = quaternion_multiply(
+            (base_q["w"], base_q["x"], base_q["y"], base_q["z"]),
+            (adjusted_q["w"], adjusted_q["x"], adjusted_q["y"], adjusted_q["z"]),
+        )
+
+        # 회전 적용
+        apply_quaternion_to_transform(
+            palm_transform, combined_q[0], combined_q[1], combined_q[2], combined_q[3]
+        )
+
+        # 3. 다시 원래 위치로 이동
+        palm_transform.Translate(-hand_center_x, -hand_center_y, -hand_center_z)
+
+    # 손가락 제어에 대한 처리
+    target_angle = 0
+    if is_calibrated and valid_dot2_data:
+        # 상대적인 쿼터니언 계산
+        relative_q_dot2 = get_relative_quaternion(initial_quaternion_dot2, dot2_data)
+
+        # 쿼터니언을 오일러 각도로 변환
+        roll, pitch, yaw = quaternion_to_euler(
+            relative_q_dot2["w"],
+            relative_q_dot2["x"],
+            relative_q_dot2["y"],
+            relative_q_dot2["z"],
+        )
+
+        # 손가락 굽힘에는 주로 roll 값 사용
+        target_angle = roll  # 음수 값이 굽힘을 의미
+
+        # 범위 제한
+        max_bend = 10
+        min_bend = -90
+        target_angle = max(min_bend, min(max_bend, target_angle))
+
+    # 왼손
+    # finger_positions = [
+    #     # 엄지 위치
+    #     {"pos": (0.4, 0.05, -0.0), "angle": (0, 20, -30)},  # 각도도 반전
+    #     # 검지 위치
+    #     {"pos": (0.25, 0.31, 0.0), "angle": (0, 0, 0)},
+    #     # 중지 위치
+    #     {"pos": (0.06, 0.31, 0.0), "angle": (0, 0, 0)},
+    #     # 약지 위치
+    #     {"pos": (-0.12, 0.31, 0.0), "angle": (0, 0, 0)},
+    #     # 소지 위치
+    #     {"pos": (-0.3, 0.31, 0.0), "angle": (0, 0, 0)},
+    # ]
+    # 오른손
     finger_positions = [
         # 엄지 위치
-        {"pos": (0.4, 0.05, -0.0), "angle": (0, 20, -30)},  # 각도도 반전
+        {"pos": (-0.38, 0.05, -0.0), "angle": (0, 20, 30)},  # 각도 방향 변경
         # 검지 위치
-        {"pos": (0.25, 0.31, 0.0), "angle": (0, 0, 0)},
+        {"pos": (-0.25, 0.28, 0.0), "angle": (0, 0, 0)},
         # 중지 위치
-        {"pos": (0.06, 0.31, 0.0), "angle": (0, 0, 0)},
+        {"pos": (-0.06, 0.31, 0.0), "angle": (0, 0, 0)},
         # 약지 위치
-        {"pos": (-0.12, 0.31, 0.0), "angle": (0, 0, 0)},
+        {"pos": (0.12, 0.28, 0.0), "angle": (0, 0, 0)},
         # 소지 위치
-        {"pos": (-0.3, 0.31, 0.0), "angle": (0, 0, 0)},
+        {"pos": (0.3, 0.24, 0.0), "angle": (0, 0, 0)},
     ]
 
-    # 선택된 손가락만 제어 (웹소켓 모듈에서 지정된 손가락들)
+    # 선택된 손가락만 제어
     for finger_idx in websocket_client.selected_fingers:
         if finger_idx < len(hand_joint_transforms):
-            # 첫 번째 관절(뿌리 관절) 위치 복원 및 회전 적용
+            # 첫 번째 관절 제어
             joint0_transform = hand_joint_transforms[finger_idx][0]
             joint0_transform.Identity()
             transform(
@@ -557,24 +927,23 @@ def timer_callback(obj, event):
                 translate=finger_positions[finger_idx]["pos"],
                 rotate=finger_positions[finger_idx]["angle"],
             )
-            # 첫 번째 관절에 회전 적용 - 모든 관절에 동일한 각도 적용
+            # 회전 적용
             transform(joint0_transform, rotate=(target_angle, 0, 0))
 
-            # 관절 반지름 (원래 크기에 맞춤)
+            # 관절 반지름
             joint_radius = 0.02
 
-            # 첫 번째 마디는 첫 번째 관절에 연결
+            # 첫 번째 마디 연결
             if len(joint_actors[finger_idx][0]) > 1:
                 phalanx1_actor, phalanx1_transform = joint_actors[finger_idx][0][1]
-                height1 = 0.15 if finger_idx == 0 else 0.18  # 엄지는 다른 길이
+                height1 = 0.15 if finger_idx == 0 else 0.18
                 offset1 = joint_radius + height1 / 2 - 0.002
 
-                # 마디1의 변환 초기화 및 위치 설정
                 phalanx1_transform.Identity()
                 phalanx1_transform.SetInput(joint0_transform)
                 transform(phalanx1_transform, translate=(0.0, offset1, 0.0))
 
-            # 두 번째 관절 (첫 번째 마디에 연결)
+            # 두 번째 관절 제어
             if len(hand_joint_transforms[finger_idx]) > 1:
                 joint1_transform = hand_joint_transforms[finger_idx][1]
                 joint1_transform.Identity()
@@ -582,21 +951,20 @@ def timer_callback(obj, event):
                 height1 = 0.15 if finger_idx == 0 else 0.18
                 offset = height1 / 2 + joint_radius - 0.002
                 transform(joint1_transform, translate=(0.0, offset, 0.0))
-                # 두 번째 관절에도 동일한 각도 적용
+                # 회전 적용
                 transform(joint1_transform, rotate=(target_angle, 0, 0))
 
-                # 두 번째 마디는 두 번째 관절에 연결
+                # 두 번째 마디 연결
                 if len(joint_actors[finger_idx][1]) > 1:
                     phalanx2_actor, phalanx2_transform = joint_actors[finger_idx][1][1]
                     height2 = 0.12 if finger_idx == 0 else 0.15
                     offset2 = joint_radius + height2 / 2 - 0.002
 
-                    # 마디2의 변환 초기화 및 위치 설정
                     phalanx2_transform.Identity()
                     phalanx2_transform.SetInput(joint1_transform)
                     transform(phalanx2_transform, translate=(0.0, offset2, 0.0))
 
-                # 세 번째 관절 (두 번째 마디에 연결)
+                # 세 번째 관절 제어
                 if len(hand_joint_transforms[finger_idx]) > 2:
                     joint2_transform = hand_joint_transforms[finger_idx][2]
                     joint2_transform.Identity()
@@ -604,10 +972,10 @@ def timer_callback(obj, event):
                     height2 = 0.12 if finger_idx == 0 else 0.15
                     offset = height2 / 2 + joint_radius - 0.002
                     transform(joint2_transform, translate=(0.0, offset, 0.0))
-                    # 세 번째 관절에도 동일한 각도 적용
+                    # 회전 적용
                     transform(joint2_transform, rotate=(target_angle, 0, 0))
 
-                    # 세 번째 마디는 세 번째 관절에 연결
+                    # 세 번째 마디 연결
                     if len(joint_actors[finger_idx][2]) > 1:
                         phalanx3_actor, phalanx3_transform = joint_actors[finger_idx][
                             2
@@ -615,7 +983,6 @@ def timer_callback(obj, event):
                         height3 = 0.1 if finger_idx == 0 else 0.12
                         offset3 = joint_radius + height3 / 2 - 0.002
 
-                        # 마디3의 변환 초기화 및 위치 설정
                         phalanx3_transform.Identity()
                         phalanx3_transform.SetInput(joint2_transform)
                         transform(phalanx3_transform, translate=(0.0, offset3, 0.0))
@@ -662,9 +1029,9 @@ def main():
 
     # Camera setup for hand viewport
     cam_right = ren_right.GetActiveCamera()
-    cam_right.SetPosition(0, 4, 0)
-    cam_right.SetFocalPoint(0, -2, 0)
-    cam_right.SetViewUp(0, 0, 1)
+    cam_right.SetPosition(-6, 0, 0)
+    cam_right.SetFocalPoint(0, 0, 0)
+    cam_right.SetViewUp(0, 1, 0)
     ren_right.ResetCameraClippingRange()
     # cam_right.Zoom(0.8)  # 추가 축소를 위한 줌 아웃 (1보다 작은 값)
 

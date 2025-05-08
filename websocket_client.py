@@ -15,8 +15,8 @@ logger = logging.getLogger("DOT_WS_Server")
 
 # 전역 데이터 저장 변수
 dot_data = {
-    "DOT1": {"roll": 0, "pitch": 0, "yaw": 0},  # 손등 센서
-    "DOT2": {"roll": 0, "pitch": 0, "yaw": 0},  # 손가락 센서
+    "DOT1": {"w": 0, "x": 0, "y": 0, "z": 0},  # 손등 센서
+    "DOT2": {"w": 0, "x": 0, "y": 0, "z": 0},  # 손가락 센서
 }
 
 # 선택된 손가락 인덱스
@@ -115,22 +115,24 @@ async def handle_websocket(websocket):
                     id_match = re.search(r'"deviceId":"(.*?)"', message)
                     device_id = id_match.group(1) if id_match else ""
 
-                    # Roll, Pitch, Yaw 값 추출
-                    roll_match = re.search(r'"r":"?([-\d.]+)"?', message)
-                    pitch_match = re.search(r'"p":"?([-\d.]+)"?', message)
-                    yaw_match = re.search(r'"y":"?([-\d.]+)"?', message)
+                    # 쿼터니언 w, x, y, z 값 추출
+                    w_match = re.search(r'"w":"?([-\d.]+)"?', message)
+                    x_match = re.search(r'"x":"?([-\d.]+)"?', message)
+                    y_match = re.search(r'"y":"?([-\d.]+)"?', message)
+                    z_match = re.search(r'"z":"?([-\d.]+)"?', message)
 
                     # 값 변환
-                    roll = float(roll_match.group(1)) if roll_match else 0
-                    pitch = float(pitch_match.group(1)) if pitch_match else 0
-                    yaw = float(yaw_match.group(1)) if yaw_match else 0
+                    w = float(w_match.group(1)) if w_match else 0
+                    x = float(x_match.group(1)) if x_match else 0
+                    y = float(y_match.group(1)) if y_match else 0
+                    z = float(z_match.group(1)) if z_match else 0
 
                     # 장치별 데이터 저장
                     if device_id in ["DOT1", "DOT2"]:
-                        dot_data[device_id] = {"roll": roll, "pitch": pitch, "yaw": yaw}
+                        dot_data[device_id] = {"w": w, "x": x, "y": y, "z": z}
                         last_data_time = time.time()  # 마지막 데이터 수신 시간 업데이트
                         logger.debug(
-                            f"{device_id} 데이터 수신: roll={roll:.1f}°, pitch={pitch:.1f}°, yaw={yaw:.1f}°"
+                            f"{device_id} 데이터 수신: w={w:.4f}, x={x:.4f}, y={y:.4f}, z={z:.4f}"
                         )
                 else:
                     logger.debug(f"기타 메시지: {message}")
@@ -156,20 +158,19 @@ async def handle_websocket(websocket):
                 logger.info("웹소켓 연결 객체 정리 완료")
 
 
-def get_normalized_roll(value, max_angle=80):
+# websocket_client.py 파일에서 수정
+def get_normalized_roll(value, max_bend=90, max_extend=20):
     """
-    Roll 값을 -max_angle~max_angle 범위로 정규화하는 함수
+    Roll 값을 정규화하는 함수
     :param value: 원본 Roll 값 (-180~180)
-    :param max_angle: 최대 각도 (기본값: 80도)
-    :return: -max_angle~max_angle 사이의 값
+    :param max_bend: 최대 굽힘 각도 (기본값: 90도)
+    :param max_extend: 최대 젖힘 각도 (기본값: 20도)
+    :return: 제한된 각도 값
     """
-    # 부호 유지하면서 크기 제한
-    if value < 0:
-        # 음수(앞으로 구부림) - 최대 각도까지 허용
-        return max(value, -max_angle)
-    else:
-        # 양수(뒤로 젖힘) - 최대 20도까지만 허용
-        return min(value, 20)  # 뒤로는 20도까지만
+    if value < 0:  # 음수일 때 - 굽힘
+        return -min(-value, max_bend)  # 최대 -90도까지 굽힘
+    else:  # 양수일 때 - 펴짐
+        return min(value, max_extend)  # 최대 20도까지 펴짐
 
 
 # 자동 재연결 함수
