@@ -416,6 +416,27 @@ def create_palm(
     return actor, source, transform
 
 
+def create_wrist(
+    width=0.5, height=1.0, depth=0.5, color=(0.8, 0.7, 0.6), transform=None
+):
+    """원통형 팔목 생성"""
+    source = vtkCylinderSource()
+    source.SetRadius(width / 3)
+    source.SetHeight(height)
+    source.SetResolution(32)  # 부드러운 원통을 위한 해상도
+
+    mapper = vtk.vtkPolyDataMapper()
+    mapper.SetInputConnection(source.GetOutputPort())
+
+    actor = vtk.vtkActor()
+    actor.SetMapper(mapper)
+    if transform:
+        actor.SetUserTransform(transform)
+    actor.GetProperty().SetColor(color)
+
+    return actor, source, transform
+
+
 # transform 함수
 def transform(
     transformation,
@@ -437,20 +458,17 @@ class MouseInteractorHighLightActor(vtk.vtkInteractorStyleTrackballCamera):
         self, parent=None, renderer=None, render_window=None, joint_transforms=None
     ):
         super().__init__()
-        # 클릭 이벤트
+        # 이벤트 옵저버 등록
         self.AddObserver("LeftButtonPressEvent", self.leftButtonPressEvent)
-        # 키 이벤트 (숫자키 처리)
         self.AddObserver("KeyPressEvent", self.on_key_press)
-
-        self.LastPickedActor = None
-        self.LastPickedProperty = vtk.vtkProperty()
+        # 주요 속성 초기화
         self.renderer = renderer
         self.render_window = render_window
-        self.joint_transforms = joint_transforms  # 관절 transform 저장
-        self.original_colors = {}  # 원래 액터 색상 저장
-        self.chopstick_mode_active = False # 젓가락 제스처 상태
-
-        # (finger_idx, joint_idx) → bent 여부 저장
+        self.joint_transforms = joint_transforms
+        self.LastPickedActor = None
+        self.LastPickedProperty = vtk.vtkProperty()
+        self.original_colors = {}
+        self.chopstick_mode_active = False
         self.joint_state = {}
 
     def leftButtonPressEvent(self, obj, event):
@@ -536,35 +554,49 @@ class MouseInteractorHighLightActor(vtk.vtkInteractorStyleTrackballCamera):
         if not self.joint_transforms:
             super().OnKeyPress()
             return
-            
         if key == "1":
-            # 엄지와 검지만 펼치고 나머지는 주먹
             self.point_gesture()
         elif key == "2":
-            # 검지와 중지로 V자 동작
             self.peace_gesture()
         elif key == "4":
-            # 검지만 계속 굽히기
             self.curl_finger(1)
         elif key == "5":
-            # 핀치 동작 (엄지와 검지가 만나는 동작)
             self.pinch_gesture()
         elif key == "6":
-            # 젓가락 제스처 (검지와 중지 모으기)
             self.chopstick_gesture()
+        elif key.lower() == '8':
+            # S 키: 왼쪽→중앙→오른쪽으로 손바닥 회전
+            self.animate_hand_swing(45)
+            time.sleep(0.5)
+            self.animate_hand_swing(0)
+            time.sleep(1)
+            self.animate_hand_swing(-45)
+            time.sleep(0.5)
+            self.animate_hand_swing(0)
+        elif key.lower() == '9':
+            # 9 키: Z축 기준으로 왼쪽→중앙→오른쪽으로 손바닥 트위스트
+            self.animate_hand_twist(45)
+            time.sleep(0.5)
+            self.animate_hand_twist(0)
+            time.sleep(1)
+            self.animate_hand_twist(-45)
+            time.sleep(0.5)
+            self.animate_hand_twist(0)
         elif key == "7":
-            # 모든 손가락 굽히기/펴기
-            for finger_idx in [0, 1, 2, 3, 4]:
+            for finger_idx in [0,1,2,3,4]:
                 if finger_idx < len(self.joint_transforms):
                     for joint_idx in range(len(self.joint_transforms[finger_idx])):
                         self.rotateJoint(finger_idx, joint_idx)
-            print("키 7 입력됨 → 모든 손가락 움직임")
+        elif key == '0':
+            # 0 키: 손바닥(palm)과 손등(back) 뒤집기 애니메이션
+            self.animate_hand_flip(180)
+            time.sleep(0.5)
+            self.animate_hand_flip(0)
         else:
-            # 기본 키 이벤트 처리
             super().OnKeyPress()
             return
-            
-        self.render_window.Render()
+        if self.render_window:
+            self.render_window.Render()
 
     def reset_all_fingers(self):
         """모든 손가락을 초기 상태로 리셋"""
@@ -674,80 +706,183 @@ class MouseInteractorHighLightActor(vtk.vtkInteractorStyleTrackballCamera):
                 self.rotateJoint(finger_idx, joint_idx)
                 time.sleep(0.1)
 
+    def apply_quaternion_rotation(self, transform_obj, axis, angle_deg):
+        """
+        임의의 축을 중심으로 회전 적용 (쿼터니언 방식)
+        
+        axis: 회전축 벡터 (x, y, z) - 정규화된 벡터여야 함
+        angle_deg: 회전 각도 (도 단위)
+        """
+        # 먼저 축 벡터 정규화
+        length = math.sqrt(axis[0]**2 + axis[1]**2 + axis[2]**2)
+        if length < 1e-10:  # 길이가 0에 가까우면 회전 안함
+            return
+            
+        norm_axis = (axis[0]/length, axis[1]/length, axis[2]/length)
+        
+        # VTK의 RotateWXYZ 함수 사용 - 내부적으로 쿼터니언으로 처리됨
+        # (각도, x, y, z)를 매개변수로 받아 임의 축 회전 수행
+        transform_obj.RotateWXYZ(angle_deg, norm_axis[0], norm_axis[1], norm_axis[2])
+        
+        return transform_obj
+    
+    def animate_quaternion_rotation(self, transform_obj, axis, target_angle, steps=20, delay=0.02):
+        """
+        쿼터니언 회전을 애니메이션으로 부드럽게 적용
+        
+        transform_obj: 회전할 vtkTransform 객체
+        axis: 회전축 벡터 (x, y, z)
+        target_angle: 목표 회전 각도 (도 단위)
+        steps: 애니메이션 단계 수
+        delay: 각 단계 사이의 지연 시간 (초)
+        """
+        angle_per_step = target_angle / steps
+        
+        for step in range(steps):
+            self.apply_quaternion_rotation(transform_obj, axis, angle_per_step)
+            self.render_window.Render()
+            time.sleep(delay)
+            
+        return transform_obj
+
     def pinch_gesture(self):
-        """간단하고 자연스러운 OK 제스처 (엄지와 검지로 원형 만들기)"""
+        """간단하고 자연스러운 OK 제스처 (엄지와 검지로 원형 만들기) - 쿼터니언 회전 적용"""
         if not self.joint_transforms:
             return
 
-        print("OK/핀치 제스처 실행")
+        print("OK/핀치 제스처 실행 (쿼터니언 회전 적용)")
         self.reset_all_fingers()
         time.sleep(0.5)
         
-        # 중지, 약지, 소지 굽히기 (간단한 방식)
+        # 중지, 약지, 소지 모든 관절을 동시에 굽히기 - 동시 애니메이션
+        # 애니메이션 단계 및 각도 준비
+        steps = 15
+        max_angle = 70
+        angle_per_step = max_angle / steps
+        
+        # 각 애니메이션 단계마다 모든 관절을 동시에 회전
+        for step in range(steps):
+            for finger_idx in [2, 3, 4]:  # 중지, 약지, 소지
+                if finger_idx < len(self.joint_transforms):
+                    for joint_idx in range(len(self.joint_transforms[finger_idx])):
+                        # 각 관절마다 약간 다른 각도 적용 (더 자연스러움)
+                        joint_angle = angle_per_step * (1.0 if joint_idx == 0 else (1.2 if joint_idx == 1 else 1.3))
+                        
+                        # 쿼터니언 회전 한 단계 적용
+                        self.apply_quaternion_rotation(
+                            self.joint_transforms[finger_idx][joint_idx],
+                            axis=(-1, 0, 0),  # X축 음의 방향 (손가락 구부리기)
+                            angle_deg=joint_angle
+                        )
+            
+            # 모든 관절을 한 단계 회전한 후 화면 갱신
+            self.render_window.Render()
+            time.sleep(0.02)  # 빠른 애니메이션을 위해 짧은 지연
+        
+        # 손가락 상태 업데이트
         for finger_idx in [2, 3, 4]:
             if finger_idx < len(self.joint_transforms):
                 for joint_idx in range(len(self.joint_transforms[finger_idx])):
                     key = (finger_idx, joint_idx)
-                    if not self.joint_state.get(key, False):
-                        max_angle = 70
-                        delta = -5
-                        for _ in range(0, max_angle, abs(delta)):
-                            transform(
-                                self.joint_transforms[finger_idx][joint_idx],
-                                rotate=(delta, 0, 0),
-                            )
-                        self.joint_state[key] = True
+                    self.joint_state[key] = True
         
         self.render_window.Render()
         time.sleep(0.3)
         
-        # 엄지 - 자연스러운 C 모양으로 굽혀서 검지 끝과 정확히 맞닿게 하기
-        if len(self.joint_transforms) > 0:
-            # 첫 번째 관절: 엄지를 검지 쪽으로 45도 회전하고 안쪽으로 굽히기
-            transform(self.joint_transforms[0][0], rotate=(0, 0, 80))   # Z축: 검지 쪽으로 더 많이 회전
-            transform(self.joint_transforms[0][0], rotate=(0, -30, 0))  # Y축: 아래쪽으로 (검지 방향)
-            transform(self.joint_transforms[0][0], rotate=(-80, 0, 0))  # X축: 앞으로 더 많이 굽히기
-            self.joint_state[(0, 0)] = True
-            
-            # 두 번째 관절: 엄지를 더 강하게 C자 모양으로 굽히기
-            if len(self.joint_transforms[0]) > 1:
-                transform(self.joint_transforms[0][1], rotate=(-60, 0, 0))  # X축으로 더 강하게 굽히기
-                transform(self.joint_transforms[0][1], rotate=(0, 50, 0))   # Y축으로 검지 방향으로 더 회전
-                self.joint_state[(0, 1)] = True
-            
-            # 세 번째 관절: 엄지 끝을 검지 끝과 정확히 맞닿도록 최대한 굽히기
-            if len(self.joint_transforms[0]) > 2:
-                transform(self.joint_transforms[0][2], rotate=(-50, 0, 0))  # X축으로 더 굽히기 (펴는 방향에서 굽히는 방향으로)
-                transform(self.joint_transforms[0][2], rotate=(0, -40, 0))
-                transform(self.joint_transforms[0][2], rotate=(0, 0, -50))   # Y축으로 검지 방향으로 회전
-                self.joint_state[(0, 2)] = True
-            
-            self.render_window.Render()
-            time.sleep(0.3)
+        # 엄지와 검지 동시에 OK 형태로 만들기
+        print("엄지와 검지 동시에 OK 형태로 굽히는 중...")
         
-        # 검지 - 엄지와 원형을 만들도록 정확히 굽혀서 끝부분이 맞닿게 하기
+        # 각 관절의 회전 설정 (관절, 회전축, 회전각도)
+        joints_to_rotate = []
+        
+        # 엄지 손가락 관절 설정
+        if len(self.joint_transforms) > 0:
+            # 첫 번째 관절
+            joints_to_rotate.append((
+                self.joint_transforms[0][0],  # 엄지 첫 번째 관절
+                (-0.9, -0.8, 0.65),          # 회전축 (X,Y,Z 복합)
+                80                           # 회전각
+            ))
+            
+            # 두 번째 관절
+            if len(self.joint_transforms[0]) > 1:
+                joints_to_rotate.append((
+                    self.joint_transforms[0][1],  # 엄지 두 번째 관절
+                    (-0.5, 0.2, -0.3),           # 회전축
+                    70                           # 회전각
+                ))
+            
+            # 세 번째 관절
+            if len(self.joint_transforms[0]) > 2:
+                joints_to_rotate.append((
+                    self.joint_transforms[0][2],  # 엄지 세 번째 관절
+                    (0.4, 0.8, -0.8),            # 회전축
+                    80                           # 회전각
+                ))
+        
+        # 검지 손가락 관절 설정
         if len(self.joint_transforms) > 1:
-            # 첫 번째 관절: 검지를 엄지 방향으로 기울이고 안쪽으로 굽히기
-            transform(self.joint_transforms[1][0], rotate=(0, 0, -30))  # Z축: 엄지 쪽으로 더 많이
-            transform(self.joint_transforms[1][0], rotate=(-35, 0, 0))  # X축: 앞으로 더 많이 굽히기
-            self.joint_state[(1, 0)] = True
+            # 첫 번째 관절
+            joints_to_rotate.append((
+                self.joint_transforms[1][0],  # 검지 첫 번째 관절
+                (-0.6, 0, 0.2),               # 회전축
+                45                           # 회전각
+            ))
             
-            # 두 번째 관절: 검지를 강하게 굽혀서 C자 모양 만들기
+            # 두 번째 관절
             if len(self.joint_transforms[1]) > 1:
-                transform(self.joint_transforms[1][1], rotate=(-75, 0, 0))  # 더 강하게 굽히기
-                self.joint_state[(1, 1)] = True
+                joints_to_rotate.append((
+                    self.joint_transforms[1][1],  # 검지 두 번째 관절
+                    (-1, 0, 0),                  # X축 회전
+                    75                           # 회전각
+                ))
             
-            # 세 번째 관절: 검지 끝을 엄지 끝과 정확히 맞닿도록 최대한 굽히기
+            # 세 번째 관절
             if len(self.joint_transforms[1]) > 2:
-                transform(self.joint_transforms[1][2], rotate=(-65, 0, 0))  # 끝부분을 더 많이 굽히기
+                joints_to_rotate.append((
+                    self.joint_transforms[1][2],  # 검지 세 번째 관절
+                    (-1, 0, 0),                  # X축 회전
+                    65                           # 회전각
+                ))
+        
+        # 모든 관절을 동시에 애니메이션으로 회전
+        steps = 50  # 애니메이션 단계 수
+        delay = 0.02  # 단계 간 지연 시간
+        
+        # 각 관절별 회전각을 단계별로 나누기
+        angle_per_step = {}
+        for i, (joint, axis, angle) in enumerate(joints_to_rotate):
+            angle_per_step[i] = angle / steps
+        
+        # 단계별로 모든 관절 동시에 회전
+        for step in range(steps):
+            for i, (joint, axis, _) in enumerate(joints_to_rotate):
+                # 한 단계의 회전 적용
+                self.apply_quaternion_rotation(joint, axis, angle_per_step[i])
+            
+            # 한 단계 완료 후 화면 갱신
+            self.render_window.Render()
+            time.sleep(delay)
+        
+        # 관절 상태 업데이트
+        if len(self.joint_transforms) > 0:
+            self.joint_state[(0, 0)] = True
+            if len(self.joint_transforms[0]) > 1:
+                self.joint_state[(0, 1)] = True
+            if len(self.joint_transforms[0]) > 2:
+                self.joint_state[(0, 2)] = True
+                
+        if len(self.joint_transforms) > 1:
+            self.joint_state[(1, 0)] = True
+            if len(self.joint_transforms[1]) > 1:
+                self.joint_state[(1, 1)] = True
+            if len(self.joint_transforms[1]) > 2:
                 self.joint_state[(1, 2)] = True
             
-            # 검지 위치를 엄지와 더 정확히 맞닿도록 미세 조정
-            transform(self.joint_transforms[1][0], translate=(0.01, 0, -0.025))  # 엄지 쪽으로 이동
-            transform(self.joint_transforms[1][0], translate=(0, -0.015, 0))      # 아래쪽으로 더 이동
-            
-            self.render_window.Render()
-            time.sleep(0.5)
+           
+        
+        self.render_window.Render()
+        time.sleep(0.5)
 
     def chopstick_gesture(self):
         """젓가락 제스처 (검지와 중지 V자로 시작해서 모으기/펴기)"""
@@ -836,7 +971,58 @@ class MouseInteractorHighLightActor(vtk.vtkInteractorStyleTrackballCamera):
         
         self.render_window.Render()
 
-    # ...기존 코드...
+    def animate_hand_swing(self, target_angle, steps=20, delay=0.02):
+        """
+        손바닥(palm_transform)을 Y축 기준으로 target_angle까지 부드럽게 회전
+        """
+        global palm_transform
+        if palm_transform is None:
+            return
+        if not hasattr(self, 'current_hand_angle'):
+            self.current_hand_angle = 0
+        delta = (target_angle - self.current_hand_angle) / steps
+        for _ in range(steps):
+            palm_transform.RotateX(delta)
+            if self.render_window:
+                self.render_window.Render()
+            time.sleep(delay)
+        self.current_hand_angle = target_angle
+    
+    def animate_hand_twist(self, target_angle, steps=20, delay=0.02):
+        """
+        손바닥(palm_transform)을 Z축 기준으로 target_angle까지 부드럽게 회전
+        """
+        global palm_transform
+        if palm_transform is None:
+            return
+        if not hasattr(self, 'current_hand_twist_angle'):
+            self.current_hand_twist_angle = 0
+        delta = (target_angle - self.current_hand_twist_angle) / steps
+        for _ in range(steps):
+            palm_transform.RotateZ(delta)
+            if self.render_window:
+                self.render_window.Render()
+            time.sleep(delay)
+        self.current_hand_twist_angle = target_angle
+
+    def animate_hand_flip(self, target_angle, steps=20, delay=0.02):
+        """
+        손바닥(palm_transform)을 X축 기준으로 target_angle까지 부드럽게 회전하여 palm/back을 반전시킵니다
+        """
+        global palm_transform
+        if palm_transform is None:
+            return
+        if not hasattr(self, 'current_hand_flip_angle'):
+            self.current_hand_flip_angle = 0
+        delta = (target_angle - self.current_hand_flip_angle) / steps
+        for _ in range(steps):
+            palm_transform.RotateY(delta)
+            if self.render_window:
+                self.render_window.Render()
+            time.sleep(delay)
+        self.current_hand_flip_angle = target_angle
+
+    # ...existing code...
 
 
 def create_hand_actors():
@@ -855,6 +1041,14 @@ def create_hand_actors():
     transform(palm_transform, rotate=(-90, 0, 0))
     palm_actor, palm_source, _ = create_palm(transform=palm_transform)
     all_actors.append(palm_actor)
+    
+    # 팔목 생성 - 손바닥 아래쪽에 붙이기
+    wrist_transform = vtk.vtkTransform()
+    wrist_transform.SetInput(palm_transform)
+    # 손바닥 아래쪽에 팔목 위치 조정 (Y축 음의 방향으로 이동)
+    transform(wrist_transform, translate=(0, -0.8, 0))
+    wrist_actor, wrist_source, _ = create_wrist(transform=wrist_transform)
+    all_actors.append(wrist_actor)
 
     # 왼손
     # finger_positions = [
@@ -1119,28 +1313,28 @@ def init_hand_model():
                     phalanx2_transform.SetInput(joint1_transform)
                     transform(phalanx2_transform, translate=(0.0, offset2, 0.0))
 
-                # 세 번째 관절 제어
-                if len(hand_joint_transforms[finger_idx]) > 2:
-                    joint2_transform = hand_joint_transforms[finger_idx][2]
-                    joint2_transform.Identity()
-                    joint2_transform.SetInput(phalanx2_transform)
-                    height2 = 0.12 if finger_idx == 0 else 0.15
-                    offset = height2 / 2 + joint_radius - 0.002
-                    transform(joint2_transform, translate=(0.0, offset, 0.0))
-                    # 회전 적용
-                    transform(joint2_transform, rotate=(target_angle, 0, 0))
+            # 세 번째 관절 제어
+            if len(hand_joint_transforms[finger_idx]) > 2:
+                joint2_transform = hand_joint_transforms[finger_idx][2]
+                joint2_transform.Identity()
+                joint2_transform.SetInput(phalanx2_transform)
+                height2 = 0.12 if finger_idx == 0 else 0.15
+                offset = height2 / 2 + joint_radius - 0.002
+                transform(joint2_transform, translate=(0.0, offset, 0.0))
+                # 회전 적용
+                transform(joint2_transform, rotate=(target_angle, 0, 0))
 
-                    # 세 번째 마디 연결
-                    if len(joint_actors[finger_idx][2]) > 1:
-                        phalanx3_actor, phalanx3_transform = joint_actors[finger_idx][
-                            2
-                        ][1]
-                        height3 = 0.1 if finger_idx == 0 else 0.12
-                        offset3 = joint_radius + height3 / 2 - 0.002
+                # 세 번째 마디 연결
+                if len(joint_actors[finger_idx][2]) > 1:
+                    phalanx3_actor, phalanx3_transform = joint_actors[finger_idx][
+                        2
+                    ][1]
+                    height3 = 0.1 if finger_idx == 0 else 0.12
+                    offset3 = joint_radius + height3 / 2 - 0.002
 
-                        phalanx3_transform.Identity()
-                        phalanx3_transform.SetInput(joint2_transform)
-                        transform(phalanx3_transform, translate=(0.0, offset3, 0.0))
+                    phalanx3_transform.Identity()
+                    phalanx3_transform.SetInput(joint2_transform)
+                    transform(phalanx3_transform, translate=(0.0, offset3, 0.0))
 
     # 화면 갱신
     render_window.Render()
@@ -1204,6 +1398,7 @@ def main():
     # 시작 애니메이션 - 손가락 움직임 표시
     animate_fingers(hand_joint_transforms, render_window)
     
+    # 인터랙티브 이벤트 루프 시작
     interactor.Initialize()
     interactor.Start()
 
