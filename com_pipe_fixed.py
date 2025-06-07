@@ -565,14 +565,14 @@ class MouseInteractorHighLightActor(vtk.vtkInteractorStyleTrackballCamera):
         elif key == "6":
             self.chopstick_gesture()
         elif key.lower() == '8':
-            # S 키: 왼쪽→중앙→오른쪽으로 손바닥 회전
-            self.animate_hand_swing(45)
+            # 8번: 팔뚝(wrist_transform) 위아래로 움직이기
+            self.animate_wrist_swing(45)
             time.sleep(0.5)
-            self.animate_hand_swing(0)
+            self.animate_wrist_swing(0)
             time.sleep(1)
-            self.animate_hand_swing(-45)
+            self.animate_wrist_swing(-45)
             time.sleep(0.5)
-            self.animate_hand_swing(0)
+            self.animate_wrist_swing(0)
         elif key.lower() == '9':
             # 9 키: Z축 기준으로 왼쪽→중앙→오른쪽으로 손바닥 트위스트
             self.animate_hand_twist(45)
@@ -990,65 +990,105 @@ class MouseInteractorHighLightActor(vtk.vtkInteractorStyleTrackballCamera):
     
     def animate_hand_twist(self, target_angle, steps=20, delay=0.02):
         """
-        손바닥(palm_transform)을 Z축 기준으로 target_angle까지 부드럽게 회전
+        손목(wrist_transform)을 Z축 기준으로 target_angle까지 부드럽게 회전
         """
-        global palm_transform
-        if palm_transform is None:
+        global wrist_transform
+        if wrist_transform is None:
             return
-        if not hasattr(self, 'current_hand_twist_angle'):
-            self.current_hand_twist_angle = 0
-        delta = (target_angle - self.current_hand_twist_angle) / steps
+        if not hasattr(self, 'current_wrist_twist_angle'):
+            self.current_wrist_twist_angle = 0
+        delta = (target_angle - self.current_wrist_twist_angle) / steps
         for _ in range(steps):
-            palm_transform.RotateZ(delta)
+            wrist_transform.RotateZ(delta)
             if self.render_window:
                 self.render_window.Render()
             time.sleep(delay)
-        self.current_hand_twist_angle = target_angle
+        self.current_wrist_twist_angle = target_angle
 
     def animate_hand_flip(self, target_angle, steps=20, delay=0.02):
         """
-        손바닥(palm_transform)을 X축 기준으로 target_angle까지 부드럽게 회전하여 palm/back을 반전시킵니다
+        손목(wrist_transform)을 Y축 기준으로 target_angle까지 부드럽게 회전하여 palm/back을 반전시킵니다
         """
-        global palm_transform
-        if palm_transform is None:
+        global wrist_transform
+        if wrist_transform is None:
             return
-        if not hasattr(self, 'current_hand_flip_angle'):
-            self.current_hand_flip_angle = 0
-        delta = (target_angle - self.current_hand_flip_angle) / steps
+        if not hasattr(self, 'current_wrist_flip_angle'):
+            self.current_wrist_flip_angle = 0
+        delta = (target_angle - self.current_wrist_flip_angle) / steps
         for _ in range(steps):
-            palm_transform.RotateY(delta)
+            wrist_transform.RotateY(delta)
             if self.render_window:
                 self.render_window.Render()
             time.sleep(delay)
-        self.current_hand_flip_angle = target_angle
+        self.current_wrist_flip_angle = target_angle
 
-    # ...existing code...
+    def animate_wrist_swing(self, target_angle, steps=20, delay=0.02):
+        """
+        팔뚝(wrist_transform)을 X축 기준으로 target_angle까지 부드럽게 회전
+        손목이 움직이면 손과 손가락도 함께 자연스럽게 움직임
+        """
+        global wrist_transform
+        try:
+            if wrist_transform is None:
+                return
+        except NameError:
+            return
+            
+        if not hasattr(self, 'current_wrist_angle'):
+            self.current_wrist_angle = 0
+            
+        # 목표 각도와 현재 각도의 차이를 단계별로 나누기
+        delta = (target_angle - self.current_wrist_angle) / steps
+        
+        # 단계별로 회전 적용
+        for _ in range(steps):
+            # 손목을 회전하면 계층 구조에 의해 손과 손가락이 자동으로 따라서 움직임
+            wrist_transform.RotateX(delta)
+            
+            # 변경사항 화면에 렌더링
+            if self.render_window:
+                self.render_window.Render()
+                
+            time.sleep(delay)
+            
+        # 현재 각도 업데이트
+        self.current_wrist_angle = target_angle
 
 
 def create_hand_actors():
-    global joint_actors, palm_transform
+    global joint_actors, palm_transform, wrist_transform
 
     all_actors = []
 
-    # 손바닥 생성 - 초기 상태를 수평으로 설정
-    palm_transform = vtk.vtkTransform()
-    # 기울어짐 보정
-    transform(
-        palm_transform, rotate=(0, 0, -45)
-    )  # Z축 -45도로 수정하여 대각선 기울기 제거
-
-    # 손바닥이 수평이 되도록 X축으로 -90도 회전
-    transform(palm_transform, rotate=(-90, 0, 0))
-    palm_actor, palm_source, _ = create_palm(transform=palm_transform)
-    all_actors.append(palm_actor)
-    
-    # 팔목 생성 - 손바닥 아래쪽에 붙이기
-    wrist_transform = vtk.vtkTransform()
-    wrist_transform.SetInput(palm_transform)
-    # 손바닥 아래쪽에 팔목 위치 조정 (Y축 음의 방향으로 이동)
-    transform(wrist_transform, translate=(0, -0.8, 0))
+    # 손목(wrist)을 먼저 생성 - 계층 구조의 최상위에 위치
+    wrist_transform = vtkTransform()
+    # 손목의 초기 위치 및 방향 설정 - 수평으로 눕히기
+    transform(wrist_transform, translate=(0, 0, 0), rotate=(-90, 0, 0))  # X축 기준 -90도 회전하여 수평으로 눕히기
     wrist_actor, wrist_source, _ = create_wrist(transform=wrist_transform)
     all_actors.append(wrist_actor)
+    
+    # 손바닥(palm) 생성 - 손목의 자식 계층으로 설정
+    palm_transform = vtkTransform()
+    palm_transform.SetInput(wrist_transform)  # 손바닥을 손목에 연결
+    # 손바닥 위치 조정 - 손목 끝부분에 정확하게 배치
+    transform(palm_transform, translate=(0, 0.98, -0.15))  # 손목이 X축 기준으로 회전했으므로 Z 방향으로 위치 조정
+    # 손바닥 X축으로 90도 회전
+    transform(palm_transform, rotate=(90, 0, 0))  # X축 기준 90도 회전
+    palm_actor, palm_source, _ = create_palm(transform=palm_transform)
+    all_actors.append(palm_actor)
+
+    # 팔목에 1자 선 추가 (Y축 방향, 팔목 표면에 위치)
+    line_source = vtk.vtkLineSource()
+    line_source.SetPoint1(0.05, -0.0, 0.16)
+    line_source.SetPoint2(0.05, 0.1, 0.16)
+    line_mapper = vtk.vtkPolyDataMapper()
+    line_mapper.SetInputConnection(line_source.GetOutputPort())
+    line_actor = vtk.vtkActor()
+    line_actor.SetMapper(line_mapper)
+    line_actor.GetProperty().SetColor(1, 0, 0)  # 검은색
+    line_actor.GetProperty().SetLineWidth(5)
+    line_actor.SetUserTransform(wrist_transform)
+    all_actors.append(line_actor)
 
     # 왼손
     # finger_positions = [
@@ -1089,7 +1129,7 @@ def create_hand_actors():
         finger_actors = []  # 각 손가락의 액터 저장
 
         # 첫 번째 관절 생성
-        joint0_transform = vtk.vtkTransform()
+        joint0_transform = vtkTransform()
         joint0_transform.SetInput(palm_transform)
         transform(
             joint0_transform, translate=finger_pos["pos"], rotate=finger_pos["angle"]
@@ -1108,7 +1148,7 @@ def create_hand_actors():
             else (0.2 if finger_idx == 2 else (0.15 if finger_idx == 4 else 0.18))
         )
         width1 = 0.12
-        phalanx1_transform = vtk.vtkTransform()
+        phalanx1_transform = vtkTransform()
         phalanx1_transform.SetInput(joint0_transform)
         offset = joint_radius + height1 / 2 - 0.002
         transform(phalanx1_transform, translate=(0.0, offset, 0.0))
@@ -1119,7 +1159,7 @@ def create_hand_actors():
         finger_actors[0].append((phalanx1_actor, phalanx1_transform))
 
         # 두 번째 관절 생성
-        joint1_transform = vtk.vtkTransform()
+        joint1_transform = vtkTransform()
         joint1_transform.SetInput(phalanx1_transform)
         offset = height1 / 2 + joint_radius - 0.002
         transform(joint1_transform, translate=(0.0, offset, 0.0))
@@ -1137,7 +1177,7 @@ def create_hand_actors():
             else (0.17 if finger_idx == 2 else (0.13 if finger_idx == 4 else 0.15))
         )
         width2 = 0.11
-        phalanx2_transform = vtk.vtkTransform()
+        phalanx2_transform = vtkTransform()
         phalanx2_transform.SetInput(joint1_transform)
         offset = joint_radius + height2 / 2 - 0.002
         transform(phalanx2_transform, translate=(0.0, offset, 0.0))
@@ -1148,7 +1188,7 @@ def create_hand_actors():
         finger_actors[1].append((phalanx2_actor, phalanx2_transform))
 
         # 세 번째 관절 생성
-        joint2_transform = vtk.vtkTransform()
+        joint2_transform = vtkTransform()
         joint2_transform.SetInput(phalanx2_transform)
         offset = height2 / 2 + joint_radius - 0.002
         transform(joint2_transform, translate=(0.0, offset, 0.0))
@@ -1166,7 +1206,7 @@ def create_hand_actors():
             else (0.14 if finger_idx == 2 else (0.09 if finger_idx == 4 else 0.12))
         )
         width3 = 0.1
-        phalanx3_transform = vtk.vtkTransform()
+        phalanx3_transform = vtkTransform()
         phalanx3_transform.SetInput(joint2_transform)
         offset = joint_radius + height3 / 2 - 0.002
         transform(phalanx3_transform, translate=(0.0, offset, 0.0))
