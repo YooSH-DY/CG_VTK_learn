@@ -566,11 +566,11 @@ class MouseInteractorHighLightActor(vtk.vtkInteractorStyleTrackballCamera):
             self.chopstick_gesture()
         elif key.lower() == '8':
             # 8번: 팔뚝(wrist_transform) 위아래로 움직이기
-            self.animate_wrist_swing(45)
+            self.animate_wrist_swing(90)
             time.sleep(0.5)
             self.animate_wrist_swing(0)
             time.sleep(1)
-            self.animate_wrist_swing(-45)
+            self.animate_wrist_swing(-90)
             time.sleep(0.5)
             self.animate_wrist_swing(0)
         elif key.lower() == '9':
@@ -1022,7 +1022,7 @@ class MouseInteractorHighLightActor(vtk.vtkInteractorStyleTrackballCamera):
             time.sleep(delay)
         self.current_wrist_flip_angle = target_angle
 
-    def animate_wrist_swing(self, target_angle, steps=20, delay=0.02):
+    def animate_wrist_swing(self, target_angle, steps=50, delay=0.02):
         """
         팔뚝(wrist_transform)을 X축 기준으로 target_angle까지 부드럽게 회전
         손목이 움직이면 손과 손가락도 함께 자연스럽게 움직임
@@ -1063,7 +1063,7 @@ def create_hand_actors():
     # 손목(wrist)을 먼저 생성 - 계층 구조의 최상위에 위치
     wrist_transform = vtkTransform()
     # 손목의 초기 위치 및 방향 설정 - 수평으로 눕히기
-    transform(wrist_transform, translate=(0, 0, 0), rotate=(-90, 0, 0))  # X축 기준 -90도 회전하여 수평으로 눕히기
+    transform(wrist_transform, translate=(0, 0, 0.5), rotate=(-90, 0, 0))  # X축 기준 -90도 회전하여 수평으로 눕히기
     wrist_actor, wrist_source, _ = create_wrist(transform=wrist_transform)
     all_actors.append(wrist_actor)
     
