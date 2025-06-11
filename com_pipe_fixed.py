@@ -1,11 +1,17 @@
 # vtk 모듈 및 필요 라이브러리 import
 import math
-import vtk
 import time
 import vtkmodules.vtkInteractionStyle
 import vtkmodules.vtkRenderingOpenGL2
 from vtkmodules.vtkCommonColor import vtkNamedColors
-from vtkmodules.vtkCommonDataModel import vtkQuadric
+from vtkmodules.vtkCommonDataModel import (
+    vtkPolyData, 
+    vtkCellArray,
+    vtkImageData,
+    vtkQuadric
+    # vtkDataArray 삭제
+)
+from vtkmodules.vtkCommonMath import vtkMatrix4x4
 from vtkmodules.vtkFiltersCore import vtkContourFilter, vtkAppendFilter, vtkAppendPolyData
 from vtkmodules.vtkFiltersModeling import vtkOutlineFilter
 from vtkmodules.vtkImagingCore import vtkExtractVOI
@@ -25,10 +31,12 @@ from vtkmodules.vtkFiltersSources import (
     vtkSphereSource,
     vtkSuperquadricSource,
     vtkCylinderSource,
+    vtkLineSource
 )
 from vtkmodules.vtkInteractionStyle import vtkInteractorStyleTrackballCamera
 from vtkmodules.vtkFiltersGeneral import vtkTransformPolyDataFilter
 from vtkmodules.vtkCommonTransforms import vtkTransform
+from vtkmodules.vtkRenderingCore import vtkPropPicker
 
 
 # 쿼터니언 관련 유틸리티 함수 추가
@@ -61,7 +69,7 @@ def quaternion_to_euler(w, x, y, z):
 
 def quaternion_to_matrix(w, x, y, z):
     """쿼터니언을 VTK 행렬로 변환"""
-    matrix = vtk.vtkMatrix4x4()
+    matrix = vtkMatrix4x4()
 
     # 쿼터니언에서 행렬 요소 계산
     xx = x * x
@@ -268,27 +276,27 @@ def create_planes(func, actor, numberOfPlanes):
 def create_capsule(height=0.2, radius=0.001, color=(0.8, 0.7, 0.6), transform=None):
     """캡슐(원통 + 양 끝 구) 형태 생성"""
     # 1) Cylinder body
-    cylinder = vtk.vtkCylinderSource()
+    cylinder = vtkCylinderSource()
     cylinder.SetRadius(radius)
     cylinder.SetHeight(height)
     cylinder.SetResolution(36)
 
     # 2) Sphere ends
-    sphere_top = vtk.vtkSphereSource()
+    sphere_top = vtkSphereSource()
     sphere_top.SetRadius(radius)
     sphere_top.SetThetaResolution(36)
     sphere_top.SetPhiResolution(36)
-    tf_top = vtk.vtkTransform()
+    tf_top = vtkTransform()
     tf_top.Translate(0, height / 2, 0)
     tpf_top = vtkTransformPolyDataFilter()
     tpf_top.SetTransform(tf_top)
     tpf_top.SetInputConnection(sphere_top.GetOutputPort())
 
-    sphere_bot = vtk.vtkSphereSource()
+    sphere_bot = vtkSphereSource()
     sphere_bot.SetRadius(radius)
     sphere_bot.SetThetaResolution(36)
     sphere_bot.SetPhiResolution(36)
-    tf_bot = vtk.vtkTransform()
+    tf_bot = vtkTransform()
     tf_bot.Translate(0, -height / 2, 0)
     tpf_bot = vtkTransformPolyDataFilter()
     tpf_bot.SetTransform(tf_bot)
@@ -302,9 +310,9 @@ def create_capsule(height=0.2, radius=0.001, color=(0.8, 0.7, 0.6), transform=No
     appender.Update()
 
     # 4) Mapper + Actor
-    mapper = vtk.vtkPolyDataMapper()
+    mapper = vtkPolyDataMapper()
     mapper.SetInputConnection(appender.GetOutputPort())
-    actor = vtk.vtkActor()
+    actor = vtkActor()
     actor.SetMapper(mapper)
     if transform:
         actor.SetUserTransform(transform)
@@ -355,11 +363,11 @@ def create_outline(source, actor):
 
 # 관절 생성 함수
 def create_joint(radius=0.025, color=(0.1, 0.9, 0.2), transform=None):
-    source = vtk.vtkSphereSource()
+    source = vtkSphereSource()
     source.SetRadius(radius)
-    mapper = vtk.vtkPolyDataMapper()
+    mapper = vtkPolyDataMapper()
     mapper.SetInputConnection(source.GetOutputPort())
-    actor = vtk.vtkActor()
+    actor = vtkActor()
     actor.SetMapper(mapper)
     if transform:
         actor.SetUserTransform(transform)
@@ -376,13 +384,13 @@ def create_phalanx(
     return create_capsule(
         height=height, radius=radius, color=color, transform=transform
     )
-    source = vtk.vtkCubeSource()
+    source = vtkCubeSource()
     source.SetXLength(width)
     source.SetYLength(height)
     source.SetZLength(depth)
-    mapper = vtk.vtkPolyDataMapper()
+    mapper = vtkPolyDataMapper()
     mapper.SetInputConnection(source.GetOutputPort())
-    actor = vtk.vtkActor()
+    actor = vtkActor()
     actor.SetMapper(mapper)
     if transform:
         actor.SetUserTransform(transform)
@@ -404,37 +412,1583 @@ def create_palm(
     source.SetPhiResolution(32)  # 더 부드러운 표면을 위한 해상도
     source.SetThetaResolution(32)
 
-    mapper = vtk.vtkPolyDataMapper()
+    mapper = vtkPolyDataMapper()
     mapper.SetInputConnection(source.GetOutputPort())
 
-    actor = vtk.vtkActor()
+    actor = vtkActor()
     actor.SetMapper(mapper)
     if transform:
         actor.SetUserTransform(transform)
     actor.GetProperty().SetColor(color)
 
     return actor, source, transform
+
+
+def create_tapered_cylinder(height=1.0, radius1=0.10, radius2=0.18, resolution=32):
+    """
+    테이퍼링된 실린더(팔뚝 모양)를 vtkPolyData로 생성
+    radius1: 위쪽(손목 쪽, 더 가늘게)
+    radius2: 아래쪽(팔뚝 쪽, 더 두껍게)
+    height: 실린더 높이
+    """
+    import vtkmodules.vtkCommonCore
+    import vtkmodules.vtkCommonDataModel
+
+    points = vtkmodules.vtkCommonCore.vtkPoints()
+    polys = vtkmodules.vtkCommonDataModel.vtkCellArray()
+    
+    # 중심점 추가 (위쪽과 아래쪽 캡용)
+    topCenter = points.InsertNextPoint(0, height / 2, 0)
+    bottomCenter = points.InsertNextPoint(0, -height / 2, 0)
+
+    # 위쪽(손목, 더 가늘게) 원
+    top_points_start = points.GetNumberOfPoints()
+    for i in range(resolution):
+        angle = 2 * math.pi * i / resolution
+        x = radius1 * math.cos(angle)
+        y = height / 2
+        z = radius1 * math.sin(angle)
+        points.InsertNextPoint(x, y, z)
+    
+    # 아래쪽(팔뚝, 더 두껍게) 원
+    bottom_points_start = points.GetNumberOfPoints()
+    for i in range(resolution):
+        angle = 2 * math.pi * i / resolution
+        x = radius2 * math.cos(angle)
+        y = -height / 2
+        z = radius2 * math.sin(angle)
+        points.InsertNextPoint(x, y, z)
+
+    # 옆면 폴리곤 생성 (사각형)
+    for i in range(resolution):
+        p0 = top_points_start + i
+        p1 = top_points_start + ((i + 1) % resolution)
+        p2 = bottom_points_start + ((i + 1) % resolution)
+        p3 = bottom_points_start + i
+        
+        quad = vtkmodules.vtkCommonCore.vtkIdList()
+        quad.InsertNextId(p0)
+        quad.InsertNextId(p1)
+        quad.InsertNextId(p2)
+        quad.InsertNextId(p3)
+        polys.InsertNextCell(quad)
+    
+    # 위쪽 캡 폴리곤 생성 (삼각형)
+    for i in range(resolution):
+        triangle = vtkmodules.vtkCommonCore.vtkIdList()
+        triangle.InsertNextId(topCenter)
+        triangle.InsertNextId(top_points_start + i)
+        triangle.InsertNextId(top_points_start + ((i + 1) % resolution))
+        polys.InsertNextCell(triangle)
+    
+    # 아래쪽 캡 폴리곤 생성 (삼각형) - 주의: 법선 방향을 올바르게 하기 위해 순서 변경
+    for i in range(resolution):
+        triangle = vtkmodules.vtkCommonCore.vtkIdList()
+        triangle.InsertNextId(bottomCenter)
+        triangle.InsertNextId(bottom_points_start + ((i + 1) % resolution))
+        triangle.InsertNextId(bottom_points_start + i)
+        polys.InsertNextCell(triangle)
+
+    polydata = vtkmodules.vtkCommonDataModel.vtkPolyData()
+    polydata.SetPoints(points)
+    polydata.SetPolys(polys)
+    
+    return polydata
 
 
 def create_wrist(
     width=0.5, height=1.0, depth=0.5, color=(0.8, 0.7, 0.6), transform=None
 ):
-    """원통형 팔목 생성"""
-    source = vtkCylinderSource()
-    source.SetRadius(width / 3)
-    source.SetHeight(height)
-    source.SetResolution(32)  # 부드러운 원통을 위한 해상도
+    """테이퍼링된 원통형 팔목 생성"""
+    # 위쪽(손목)이 더 가늘고, 아래쪽(팔뚝)이 더 두껍게
+    tapered_poly = create_tapered_cylinder(
+        height=height,
+        radius1=width / 3,      # 위쪽(손목) 반지름 (더 가늘게)
+        radius2=depth / 2.2,    # 아래쪽(팔뚝) 반지름 (더 작게)
+        resolution=64           # 해상도 높임 (32에서 64로)
+    )
+    mapper = vtkPolyDataMapper()
+    mapper.SetInputData(tapered_poly)
 
-    mapper = vtk.vtkPolyDataMapper()
+    actor = vtkActor()
+    actor.SetMapper(mapper)
+    if transform:
+        actor.SetUserTransform(transform)
+    
+    # 매끄러운 표면을 위한 속성 설정
+    # prop = actor.GetProperty()
+    # prop.SetColor(color)
+    # prop.SetSpecular(0.4)       # 반사광 추가
+    # prop.SetSpecularPower(20)   # 반사광 세기
+    # prop.SetAmbient(0.1)        # 주변광 약간 추가
+    # prop.SetDiffuse(0.8)        # 확산광 증가
+    # prop.SetInterpolationToPhong()  # Phong 쉐이딩으로 매끄럽게
+
+    return actor, tapered_poly, transform
+
+
+# 쿼터니언 관련 유틸리티 함수 추가
+def quaternion_to_euler(w, x, y, z):
+    """쿼터니언(w, x, y, z)을 오일러 각도(도)로 변환"""
+    # Roll (x축 회전)
+    sinr_cosp = 2 * (w * x + y * z)
+    cosr_cosp = 1 - 2 * (x * x + y * y)
+    roll = math.atan2(sinr_cosp, cosr_cosp)
+
+    # Pitch (y축 회전)
+    sinp = 2 * (w * y - z * x)
+    if abs(sinp) >= 1:
+        pitch = math.copysign(math.pi / 2, sinp)  # 범위를 벗어나면 90도 사용
+    else:
+        pitch = math.asin(sinp)
+
+    # Yaw (z축 회전)
+    siny_cosp = 2 * (w * z + x * y)
+    cosy_cosp = 1 - 2 * (y * y + z * z)
+    yaw = math.atan2(siny_cosp, cosy_cosp)
+
+    # 라디안에서 도(degree)로 변환
+    roll = math.degrees(roll)
+    pitch = math.degrees(pitch)
+    yaw = math.degrees(yaw)
+
+    return roll, pitch, yaw
+
+
+def quaternion_to_matrix(w, x, y, z):
+    """쿼터니언을 VTK 행렬로 변환"""
+    matrix = vtkMatrix4x4()
+
+    # 쿼터니언에서 행렬 요소 계산
+    xx = x * x
+    xy = x * y
+    xz = x * z
+    xw = x * w
+
+    yy = y * y
+    yz = y * z
+    yw = y * w
+
+    zz = z * z
+    zw = z * w
+
+    # 회전 행렬 설정 (3x3 부분)
+    matrix.SetElement(0, 0, 1 - 2 * (yy + zz))
+    matrix.SetElement(0, 1, 2 * (xy - zw))
+    matrix.SetElement(0, 2, 2 * (xz + yw))
+
+    matrix.SetElement(1, 0, 2 * (xy + zw))
+    matrix.SetElement(1, 1, 1 - 2 * (xx + zz))
+    matrix.SetElement(1, 2, 2 * (yz - xw))
+
+    matrix.SetElement(2, 0, 2 * (xz - yw))
+    matrix.SetElement(2, 1, 2 * (yz + xw))
+    matrix.SetElement(2, 2, 1 - 2 * (xx + yy))
+
+    # 이동 요소는 0으로 설정
+    matrix.SetElement(0, 3, 0)
+    matrix.SetElement(1, 3, 0)
+    matrix.SetElement(2, 3, 0)
+    matrix.SetElement(3, 0, 0)
+    matrix.SetElement(3, 1, 0)
+    matrix.SetElement(3, 2, 0)
+    matrix.SetElement(3, 3, 1)
+
+    return matrix
+
+
+def apply_quaternion_to_transform(transform, w, x, y, z):
+    """쿼터니언 회전을 VTK 변환 객체에 적용"""
+    # 쿼터니언을 행렬로 변환
+    matrix = quaternion_to_matrix(w, x, y, z)
+
+    # 변환 객체에 행렬 적용
+    transform.SetMatrix(matrix)
+
+    return transform
+
+
+# 쿼터니언 관련 추가 유틸리티 함수
+def quaternion_multiply(q1, q2):
+    """두 쿼터니언 q1, q2의 곱을 계산"""
+    w1, x1, y1, z1 = q1
+    w2, x2, y2, z2 = q2
+
+    w = w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2
+    x = w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2
+    y = w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2
+    z = w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2
+
+    return w, x, y, z
+
+
+def quaternion_inverse(q):
+    """쿼터니언의 역(inverse)을 계산"""
+    w, x, y, z = q
+    norm_sq = w * w + x * x + y * y + z * z
+
+    if norm_sq < 1e-10:  # 0에 가까운 경우 처리
+        return 1, 0, 0, 0
+
+    inv_norm_sq = 1.0 / norm_sq
+    return w * inv_norm_sq, -x * inv_norm_sq, -y * inv_norm_sq, -z * inv_norm_sq
+
+
+def get_relative_quaternion(initial_q, current_q):
+    """초기 쿼터니언 기준 현재 쿼터니언의 상대적 회전 계산"""
+    inv_initial = quaternion_inverse(
+        (initial_q["w"], initial_q["x"], initial_q["y"], initial_q["z"])
+    )
+    current = (current_q["w"], current_q["x"], current_q["y"], current_q["z"])
+
+    # 초기 쿼터니언의 역(inverse)과 현재 쿼터니언을 곱해 상대 회전 계산
+    relative_q = quaternion_multiply(current, inv_initial)
+
+    return {
+        "w": relative_q[0],
+        "x": relative_q[1],
+        "y": relative_q[2],
+        "z": relative_q[3],
+    }
+
+
+# 전역 변수 설정
+colors = vtkNamedColors()
+finger_transforms = {}  # 각 손가락 마디의 변환 객체 저장
+finger_actors = {}  # 각 손가락 마디의 액터 저장
+render_window = None  # 렌더윈도우 전역 참조
+interactor = None  # 인터랙터 전역 참조
+joint_actors = []  # 손가락 관절 액터 저장 리스트
+hand_joint_transforms = []  # 손가락 관절 트랜스폼 글로벌 참조
+
+# 전역 변수 설정
+colors = vtkNamedColors()
+finger_transforms = {}  # 각 손가락 마디의 변환 객체 저장
+finger_actors = {}  # 각 손가락 마디의 액터 저장
+render_window = None  # 렌더윈도우 전역 참조
+interactor = None  # 인터랙터 전역 참조
+joint_actors = []  # 손가락 관절 액터 저장 리스트
+hand_joint_transforms = []  # 손가락 관절 트랜스폼 글로벌 참조
+# 웹소켓 연결 관련 변수 제거
+
+
+def create_quadric_visualization(colors):
+    # Collection of all actors to return
+    actors = []
+
+    # Sample quadric function
+    quadric = vtkQuadric()
+    quadric.SetCoefficients(1, 2, 3, 0, 1, 0, 0, 0, 0, 0)
+
+    sample = vtkSampleFunction()
+    sample.SetSampleDimensions(25, 25, 25)
+    sample.SetImplicitFunction(quadric)
+
+    # Create isosurface
+    isoActor = vtkActor()
+    create_isosurface(sample, isoActor)
+    actors.append(isoActor)
+
+    outlineIsoActor = vtkActor()
+    create_outline(sample, outlineIsoActor)
+    actors.append(outlineIsoActor)
+
+    # Create planes
+    planesActor = vtkActor()
+    create_planes(sample, planesActor, 3)
+    planesActor.AddPosition(isoActor.GetBounds()[0] * 2.0, 0, 0)
+    actors.append(planesActor)
+
+    outlinePlanesActor = vtkActor()
+    create_outline(sample, outlinePlanesActor)
+    outlinePlanesActor.AddPosition(isoActor.GetBounds()[0] * 2.0, 0, 0)
+    actors.append(outlinePlanesActor)
+
+    # Create contours
+    contourActor = vtkActor()
+    create_contours(sample, contourActor, 3, 15)
+    contourActor.AddPosition(isoActor.GetBounds()[0] * 4.0, 0, 0.8)
+    actors.append(contourActor)
+
+    outlineContourActor = vtkActor()
+    create_outline(sample, outlineContourActor)
+    outlineContourActor.AddPosition(isoActor.GetBounds()[0] * 4.0, 0, 0)
+    actors.append(outlineContourActor)
+
+    return actors
+
+
+def create_isosurface(func, actor, numberOfContours=5):
+    # Generate implicit surface
+    contour = vtkContourFilter()
+    contour.SetInputConnection(func.GetOutputPort())
+    ranges = [1.0, 3.0]
+    contour.GenerateValues(numberOfContours, ranges)
+
+    # Map contour
+    contourMapper = vtkPolyDataMapper()
+    contourMapper.SetInputConnection(contour.GetOutputPort())
+    contourMapper.SetScalarRange(0, 9)
+
+    actor.SetMapper(contourMapper)
+    return
+
+
+def create_planes(func, actor, numberOfPlanes):
+    # Extract planes from implicit function
+    append = vtkAppendFilter()
+
+    dims = func.GetSampleDimensions()
+    sliceIncr = (dims[2] - 1) // (numberOfPlanes + 1)
+    sliceNum = -4
+    for i in range(0, numberOfPlanes):
+        extract = vtkExtractVOI()
+        extract.SetInputConnection(func.GetOutputPort())
+        extract.SetVOI(
+            0, dims[0] - 1, 0, dims[1] - 1, sliceNum + sliceIncr, sliceNum + sliceIncr
+        )
+        append.AddInputConnection(extract.GetOutputPort())
+        sliceNum += sliceIncr
+    append.Update()
+
+    # Map planes
+    planesMapper = vtkDataSetMapper()
+    planesMapper.SetInputConnection(append.GetOutputPort())
+    planesMapper.SetScalarRange(0, 4)
+
+    actor.SetMapper(planesMapper)
+    actor.GetProperty().SetAmbient(1.0)
+    return
+
+
+def create_capsule(height=0.2, radius=0.001, color=(0.8, 0.7, 0.6), transform=None):
+    """캡슐(원통 + 양 끝 구) 형태 생성"""
+    # 1) Cylinder body
+    cylinder = vtkCylinderSource()
+    cylinder.SetRadius(radius)
+    cylinder.SetHeight(height)
+    cylinder.SetResolution(36)
+
+    # 2) Sphere ends
+    sphere_top = vtkSphereSource()
+    sphere_top.SetRadius(radius)
+    sphere_top.SetThetaResolution(36)
+    sphere_top.SetPhiResolution(36)
+    tf_top = vtkTransform()
+    tf_top.Translate(0, height / 2, 0)
+    tpf_top = vtkTransformPolyDataFilter()
+    tpf_top.SetTransform(tf_top)
+    tpf_top.SetInputConnection(sphere_top.GetOutputPort())
+
+    sphere_bot = vtkSphereSource()
+    sphere_bot.SetRadius(radius)
+    sphere_bot.SetThetaResolution(36)
+    sphere_bot.SetPhiResolution(36)
+    tf_bot = vtkTransform()
+    tf_bot.Translate(0, -height / 2, 0)
+    tpf_bot = vtkTransformPolyDataFilter()
+    tpf_bot.SetTransform(tf_bot)
+    tpf_bot.SetInputConnection(sphere_bot.GetOutputPort())
+
+    # 3) Append all
+    appender = vtkAppendPolyData()
+    appender.AddInputConnection(cylinder.GetOutputPort())
+    appender.AddInputConnection(tpf_top.GetOutputPort())
+    appender.AddInputConnection(tpf_bot.GetOutputPort())
+    appender.Update()
+
+    # 4) Mapper + Actor
+    mapper = vtkPolyDataMapper()
+    mapper.SetInputConnection(appender.GetOutputPort())
+    actor = vtkActor()
+    actor.SetMapper(mapper)
+    if transform:
+        actor.SetUserTransform(transform)
+    actor.GetProperty().SetColor(color)
+    return actor, appender, transform
+
+
+def create_contours(func, actor, numberOfPlanes, numberOfContours):
+    # Extract planes from implicit function
+    append = vtkAppendFilter()
+
+    dims = func.GetSampleDimensions()
+    sliceIncr = (dims[2] - 1) // (numberOfPlanes + 1)
+
+    sliceNum = -4
+    for i in range(0, numberOfPlanes):
+        extract = vtkExtractVOI()
+        extract.SetInputConnection(func.GetOutputPort())
+        extract.SetVOI(
+            0, dims[0] - 1, 0, dims[1] - 1, sliceNum + sliceIncr, sliceNum + sliceIncr
+        )
+        ranges = [1.0, 6.0]
+        contour = vtkContourFilter()
+        contour.SetInputConnection(extract.GetOutputPort())
+        contour.GenerateValues(numberOfContours, ranges)
+        append.AddInputConnection(contour.GetOutputPort())
+        sliceNum += sliceIncr
+    append.Update()
+
+    # Map planes
+    planesMapper = vtkDataSetMapper()
+    planesMapper.SetInputConnection(append.GetOutputPort())
+    planesMapper.SetScalarRange(0, 7)
+
+    actor.SetMapper(planesMapper)
+    actor.GetProperty().SetAmbient(1.0)
+    return
+
+
+def create_outline(source, actor):
+    outline = vtkOutlineFilter()
+    outline.SetInputConnection(source.GetOutputPort())
+    mapper = vtkPolyDataMapper()
+    mapper.SetInputConnection(outline.GetOutputPort())
+    actor.SetMapper(mapper)
+    return
+
+
+# 관절 생성 함수
+def create_joint(radius=0.025, color=(0.1, 0.9, 0.2), transform=None):
+    source = vtkSphereSource()
+    source.SetRadius(radius)
+    mapper = vtkPolyDataMapper()
+    mapper.SetInputConnection(source.GetOutputPort())
+    actor = vtkActor()
+    actor.SetMapper(mapper)
+    if transform:
+        actor.SetUserTransform(transform)
+    actor.GetProperty().SetColor(color)
+    return actor, source, transform
+
+
+# 마디 생성 함수
+def create_phalanx(
+    width=0.15, height=0.2, depth=0.1, color=(0.8, 0.7, 0.6), transform=None
+):
+    # 캡슐 반지름은 너비의 절반 정도로 설정
+    radius = width / 2
+    return create_capsule(
+        height=height, radius=radius, color=color, transform=transform
+    )
+    source = vtkCubeSource()
+    source.SetXLength(width)
+    source.SetYLength(height)
+    source.SetZLength(depth)
+    mapper = vtkPolyDataMapper()
+    mapper.SetInputConnection(source.GetOutputPort())
+    actor = vtkActor()
+    actor.SetMapper(mapper)
+    if transform:
+        actor.SetUserTransform(transform)
+    actor.GetProperty().SetColor(color)
+    return actor, source, transform
+
+
+def create_palm(
+    width=1.2, height=0.4, depth=1.35, color=(0.8, 0.7, 0.6), transform=None
+):
+    """둥근 모서리(rounded box) 형태의 손바닥 생성"""
+    source = vtkSuperquadricSource()
+    source.SetToroidal(0)  # 토러스가 아닌 일반 슈퍼쿼드릭
+    source.SetPhiRoundness(0.8)  # φ 방향 라운딩 정도 (0.1~2.0)
+    source.SetThetaRoundness(0.8)  # θ 방향 라운딩 정도
+    source.SetThickness(0.8)  # 필렛(모서리 둥글기) 정도
+    # 슈퍼쿼드릭 기본 크기는 [-1,1] 범위이므로 절반 값으로 스케일
+    source.SetScale(width / 2, height / 2, depth / 2)
+    source.SetPhiResolution(32)  # 더 부드러운 표면을 위한 해상도
+    source.SetThetaResolution(32)
+
+    mapper = vtkPolyDataMapper()
     mapper.SetInputConnection(source.GetOutputPort())
 
-    actor = vtk.vtkActor()
+    actor = vtkActor()
     actor.SetMapper(mapper)
     if transform:
         actor.SetUserTransform(transform)
     actor.GetProperty().SetColor(color)
 
     return actor, source, transform
+
+
+def create_tapered_cylinder(height=1.0, radius1=0.10, radius2=0.18, resolution=32):
+    """
+    테이퍼링된 실린더(팔뚝 모양)를 vtkPolyData로 생성
+    radius1: 위쪽(손목 쪽, 더 가늘게)
+    radius2: 아래쪽(팔뚝 쪽, 더 두껍게)
+    height: 실린더 높이
+    """
+    import vtkmodules.vtkCommonCore
+    import vtkmodules.vtkCommonDataModel
+
+    points = vtkmodules.vtkCommonCore.vtkPoints()
+    polys = vtkmodules.vtkCommonDataModel.vtkCellArray()
+    
+    # 중심점 추가 (위쪽과 아래쪽 캡용)
+    topCenter = points.InsertNextPoint(0, height / 2, 0)
+    bottomCenter = points.InsertNextPoint(0, -height / 2, 0)
+
+    # 위쪽(손목, 더 가늘게) 원
+    top_points_start = points.GetNumberOfPoints()
+    for i in range(resolution):
+        angle = 2 * math.pi * i / resolution
+        x = radius1 * math.cos(angle)
+        y = height / 2
+        z = radius1 * math.sin(angle)
+        points.InsertNextPoint(x, y, z)
+    
+    # 아래쪽(팔뚝, 더 두껍게) 원
+    bottom_points_start = points.GetNumberOfPoints()
+    for i in range(resolution):
+        angle = 2 * math.pi * i / resolution
+        x = radius2 * math.cos(angle)
+        y = -height / 2
+        z = radius2 * math.sin(angle)
+        points.InsertNextPoint(x, y, z)
+
+    # 옆면 폴리곤 생성 (사각형)
+    for i in range(resolution):
+        p0 = top_points_start + i
+        p1 = top_points_start + ((i + 1) % resolution)
+        p2 = bottom_points_start + ((i + 1) % resolution)
+        p3 = bottom_points_start + i
+        
+        quad = vtkmodules.vtkCommonCore.vtkIdList()
+        quad.InsertNextId(p0)
+        quad.InsertNextId(p1)
+        quad.InsertNextId(p2)
+        quad.InsertNextId(p3)
+        polys.InsertNextCell(quad)
+    
+    # 위쪽 캡 폴리곤 생성 (삼각형)
+    for i in range(resolution):
+        triangle = vtkmodules.vtkCommonCore.vtkIdList()
+        triangle.InsertNextId(topCenter)
+        triangle.InsertNextId(top_points_start + i)
+        triangle.InsertNextId(top_points_start + ((i + 1) % resolution))
+        polys.InsertNextCell(triangle)
+    
+    # 아래쪽 캡 폴리곤 생성 (삼각형) - 주의: 법선 방향을 올바르게 하기 위해 순서 변경
+    for i in range(resolution):
+        triangle = vtkmodules.vtkCommonCore.vtkIdList()
+        triangle.InsertNextId(bottomCenter)
+        triangle.InsertNextId(bottom_points_start + ((i + 1) % resolution))
+        triangle.InsertNextId(bottom_points_start + i)
+        polys.InsertNextCell(triangle)
+
+    polydata = vtkmodules.vtkCommonDataModel.vtkPolyData()
+    polydata.SetPoints(points)
+    polydata.SetPolys(polys)
+    
+    return polydata
+
+
+def create_wrist(
+    width=0.5, height=1.0, depth=0.5, color=(0.8, 0.7, 0.6), transform=None
+):
+    """테이퍼링된 원통형 팔목 생성"""
+    # 위쪽(손목)이 더 가늘고, 아래쪽(팔뚝)이 더 두껍게
+    tapered_poly = create_tapered_cylinder(
+        height=height,
+        radius1=width / 3,      # 위쪽(손목) 반지름 (더 가늘게)
+        radius2=depth / 2.2,    # 아래쪽(팔뚝) 반지름 (더 작게)
+        resolution=64           # 해상도 높임 (32에서 64로)
+    )
+    mapper = vtkPolyDataMapper()
+    mapper.SetInputData(tapered_poly)
+
+    actor = vtkActor()
+    actor.SetMapper(mapper)
+    if transform:
+        actor.SetUserTransform(transform)
+    
+    # 매끄러운 표면을 위한 속성 설정
+    # prop = actor.GetProperty()
+    # prop.SetColor(color)
+    # prop.SetSpecular(0.4)       # 반사광 추가
+    # prop.SetSpecularPower(20)   # 반사광 세기
+    # prop.SetAmbient(0.1)        # 주변광 약간 추가
+    # prop.SetDiffuse(0.8)        # 확산광 증가
+    # prop.SetInterpolationToPhong()  # Phong 쉐이딩으로 매끄럽게
+
+    return actor, tapered_poly, transform
+
+
+# 쿼터니언 관련 유틸리티 함수 추가
+def quaternion_to_euler(w, x, y, z):
+    """쿼터니언(w, x, y, z)을 오일러 각도(도)로 변환"""
+    # Roll (x축 회전)
+    sinr_cosp = 2 * (w * x + y * z)
+    cosr_cosp = 1 - 2 * (x * x + y * y)
+    roll = math.atan2(sinr_cosp, cosr_cosp)
+
+    # Pitch (y축 회전)
+    sinp = 2 * (w * y - z * x)
+    if abs(sinp) >= 1:
+        pitch = math.copysign(math.pi / 2, sinp)  # 범위를 벗어나면 90도 사용
+    else:
+        pitch = math.asin(sinp)
+
+    # Yaw (z축 회전)
+    siny_cosp = 2 * (w * z + x * y)
+    cosy_cosp = 1 - 2 * (y * y + z * z)
+    yaw = math.atan2(siny_cosp, cosy_cosp)
+
+    # 라디안에서 도(degree)로 변환
+    roll = math.degrees(roll)
+    pitch = math.degrees(pitch)
+    yaw = math.degrees(yaw)
+
+    return roll, pitch, yaw
+
+
+def quaternion_to_matrix(w, x, y, z):
+    """쿼터니언을 VTK 행렬로 변환"""
+    matrix = vtkMatrix4x4()
+
+    # 쿼터니언에서 행렬 요소 계산
+    xx = x * x
+    xy = x * y
+    xz = x * z
+    xw = x * w
+
+    yy = y * y
+    yz = y * z
+    yw = y * w
+
+    zz = z * z
+    zw = z * w
+
+    # 회전 행렬 설정 (3x3 부분)
+    matrix.SetElement(0, 0, 1 - 2 * (yy + zz))
+    matrix.SetElement(0, 1, 2 * (xy - zw))
+    matrix.SetElement(0, 2, 2 * (xz + yw))
+
+    matrix.SetElement(1, 0, 2 * (xy + zw))
+    matrix.SetElement(1, 1, 1 - 2 * (xx + zz))
+    matrix.SetElement(1, 2, 2 * (yz - xw))
+
+    matrix.SetElement(2, 0, 2 * (xz - yw))
+    matrix.SetElement(2, 1, 2 * (yz + xw))
+    matrix.SetElement(2, 2, 1 - 2 * (xx + yy))
+
+    # 이동 요소는 0으로 설정
+    matrix.SetElement(0, 3, 0)
+    matrix.SetElement(1, 3, 0)
+    matrix.SetElement(2, 3, 0)
+    matrix.SetElement(3, 0, 0)
+    matrix.SetElement(3, 1, 0)
+    matrix.SetElement(3, 2, 0)
+    matrix.SetElement(3, 3, 1)
+
+    return matrix
+
+
+def apply_quaternion_to_transform(transform, w, x, y, z):
+    """쿼터니언 회전을 VTK 변환 객체에 적용"""
+    # 쿼터니언을 행렬로 변환
+    matrix = quaternion_to_matrix(w, x, y, z)
+
+    # 변환 객체에 행렬 적용
+    transform.SetMatrix(matrix)
+
+    return transform
+
+
+# 쿼터니언 관련 추가 유틸리티 함수
+def quaternion_multiply(q1, q2):
+    """두 쿼터니언 q1, q2의 곱을 계산"""
+    w1, x1, y1, z1 = q1
+    w2, x2, y2, z2 = q2
+
+    w = w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2
+    x = w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2
+    y = w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2
+    z = w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2
+
+    return w, x, y, z
+
+
+def quaternion_inverse(q):
+    """쿼터니언의 역(inverse)을 계산"""
+    w, x, y, z = q
+    norm_sq = w * w + x * x + y * y + z * z
+
+    if norm_sq < 1e-10:  # 0에 가까운 경우 처리
+        return 1, 0, 0, 0
+
+    inv_norm_sq = 1.0 / norm_sq
+    return w * inv_norm_sq, -x * inv_norm_sq, -y * inv_norm_sq, -z * inv_norm_sq
+
+
+def get_relative_quaternion(initial_q, current_q):
+    """초기 쿼터니언 기준 현재 쿼터니언의 상대적 회전 계산"""
+    inv_initial = quaternion_inverse(
+        (initial_q["w"], initial_q["x"], initial_q["y"], initial_q["z"])
+    )
+    current = (current_q["w"], current_q["x"], current_q["y"], current_q["z"])
+
+    # 초기 쿼터니언의 역(inverse)과 현재 쿼터니언을 곱해 상대 회전 계산
+    relative_q = quaternion_multiply(current, inv_initial)
+
+    return {
+        "w": relative_q[0],
+        "x": relative_q[1],
+        "y": relative_q[2],
+        "z": relative_q[3],
+    }
+
+
+# 전역 변수 설정
+colors = vtkNamedColors()
+finger_transforms = {}  # 각 손가락 마디의 변환 객체 저장
+finger_actors = {}  # 각 손가락 마디의 액터 저장
+render_window = None  # 렌더윈도우 전역 참조
+interactor = None  # 인터랙터 전역 참조
+joint_actors = []  # 손가락 관절 액터 저장 리스트
+hand_joint_transforms = []  # 손가락 관절 트랜스폼 글로벌 참조
+
+# 전역 변수 설정
+colors = vtkNamedColors()
+finger_transforms = {}  # 각 손가락 마디의 변환 객체 저장
+finger_actors = {}  # 각 손가락 마디의 액터 저장
+render_window = None  # 렌더윈도우 전역 참조
+interactor = None  # 인터랙터 전역 참조
+joint_actors = []  # 손가락 관절 액터 저장 리스트
+hand_joint_transforms = []  # 손가락 관절 트랜스폼 글로벌 참조
+# 웹소켓 연결 관련 변수 제거
+
+
+def create_quadric_visualization(colors):
+    # Collection of all actors to return
+    actors = []
+
+    # Sample quadric function
+    quadric = vtkQuadric()
+    quadric.SetCoefficients(1, 2, 3, 0, 1, 0, 0, 0, 0, 0)
+
+    sample = vtkSampleFunction()
+    sample.SetSampleDimensions(25, 25, 25)
+    sample.SetImplicitFunction(quadric)
+
+    # Create isosurface
+    isoActor = vtkActor()
+    create_isosurface(sample, isoActor)
+    actors.append(isoActor)
+
+    outlineIsoActor = vtkActor()
+    create_outline(sample, outlineIsoActor)
+    actors.append(outlineIsoActor)
+
+    # Create planes
+    planesActor = vtkActor()
+    create_planes(sample, planesActor, 3)
+    planesActor.AddPosition(isoActor.GetBounds()[0] * 2.0, 0, 0)
+    actors.append(planesActor)
+
+    outlinePlanesActor = vtkActor()
+    create_outline(sample, outlinePlanesActor)
+    outlinePlanesActor.AddPosition(isoActor.GetBounds()[0] * 2.0, 0, 0)
+    actors.append(outlinePlanesActor)
+
+    # Create contours
+    contourActor = vtkActor()
+    create_contours(sample, contourActor, 3, 15)
+    contourActor.AddPosition(isoActor.GetBounds()[0] * 4.0, 0, 0.8)
+    actors.append(contourActor)
+
+    outlineContourActor = vtkActor()
+    create_outline(sample, outlineContourActor)
+    outlineContourActor.AddPosition(isoActor.GetBounds()[0] * 4.0, 0, 0)
+    actors.append(outlineContourActor)
+
+    return actors
+
+
+def create_isosurface(func, actor, numberOfContours=5):
+    # Generate implicit surface
+    contour = vtkContourFilter()
+    contour.SetInputConnection(func.GetOutputPort())
+    ranges = [1.0, 3.0]
+    contour.GenerateValues(numberOfContours, ranges)
+
+    # Map contour
+    contourMapper = vtkPolyDataMapper()
+    contourMapper.SetInputConnection(contour.GetOutputPort())
+    contourMapper.SetScalarRange(0, 9)
+
+    actor.SetMapper(contourMapper)
+    return
+
+
+def create_planes(func, actor, numberOfPlanes):
+    # Extract planes from implicit function
+    append = vtkAppendFilter()
+
+    dims = func.GetSampleDimensions()
+    sliceIncr = (dims[2] - 1) // (numberOfPlanes + 1)
+    sliceNum = -4
+    for i in range(0, numberOfPlanes):
+        extract = vtkExtractVOI()
+        extract.SetInputConnection(func.GetOutputPort())
+        extract.SetVOI(
+            0, dims[0] - 1, 0, dims[1] - 1, sliceNum + sliceIncr, sliceNum + sliceIncr
+        )
+        append.AddInputConnection(extract.GetOutputPort())
+        sliceNum += sliceIncr
+    append.Update()
+
+    # Map planes
+    planesMapper = vtkDataSetMapper()
+    planesMapper.SetInputConnection(append.GetOutputPort())
+    planesMapper.SetScalarRange(0, 4)
+
+    actor.SetMapper(planesMapper)
+    actor.GetProperty().SetAmbient(1.0)
+    return
+
+
+def create_capsule(height=0.2, radius=0.001, color=(0.8, 0.7, 0.6), transform=None):
+    """캡슐(원통 + 양 끝 구) 형태 생성"""
+    # 1) Cylinder body
+    cylinder = vtkCylinderSource()
+    cylinder.SetRadius(radius)
+    cylinder.SetHeight(height)
+    cylinder.SetResolution(36)
+
+    # 2) Sphere ends
+    sphere_top = vtkSphereSource()
+    sphere_top.SetRadius(radius)
+    sphere_top.SetThetaResolution(36)
+    sphere_top.SetPhiResolution(36)
+    tf_top = vtkTransform()
+    tf_top.Translate(0, height / 2, 0)
+    tpf_top = vtkTransformPolyDataFilter()
+    tpf_top.SetTransform(tf_top)
+    tpf_top.SetInputConnection(sphere_top.GetOutputPort())
+
+    sphere_bot = vtkSphereSource()
+    sphere_bot.SetRadius(radius)
+    sphere_bot.SetThetaResolution(36)
+    sphere_bot.SetPhiResolution(36)
+    tf_bot = vtkTransform()
+    tf_bot.Translate(0, -height / 2, 0)
+    tpf_bot = vtkTransformPolyDataFilter()
+    tpf_bot.SetTransform(tf_bot)
+    tpf_bot.SetInputConnection(sphere_bot.GetOutputPort())
+
+    # 3) Append all
+    appender = vtkAppendPolyData()
+    appender.AddInputConnection(cylinder.GetOutputPort())
+    appender.AddInputConnection(tpf_top.GetOutputPort())
+    appender.AddInputConnection(tpf_bot.GetOutputPort())
+    appender.Update()
+
+    # 4) Mapper + Actor
+    mapper = vtkPolyDataMapper()
+    mapper.SetInputConnection(appender.GetOutputPort())
+    actor = vtkActor()
+    actor.SetMapper(mapper)
+    if transform:
+        actor.SetUserTransform(transform)
+    actor.GetProperty().SetColor(color)
+    return actor, appender, transform
+
+
+def create_contours(func, actor, numberOfPlanes, numberOfContours):
+    # Extract planes from implicit function
+    append = vtkAppendFilter()
+
+    dims = func.GetSampleDimensions()
+    sliceIncr = (dims[2] - 1) // (numberOfPlanes + 1)
+
+    sliceNum = -4
+    for i in range(0, numberOfPlanes):
+        extract = vtkExtractVOI()
+        extract.SetInputConnection(func.GetOutputPort())
+        extract.SetVOI(
+            0, dims[0] - 1, 0, dims[1] - 1, sliceNum + sliceIncr, sliceNum + sliceIncr
+        )
+        ranges = [1.0, 6.0]
+        contour = vtkContourFilter()
+        contour.SetInputConnection(extract.GetOutputPort())
+        contour.GenerateValues(numberOfContours, ranges)
+        append.AddInputConnection(contour.GetOutputPort())
+        sliceNum += sliceIncr
+    append.Update()
+
+    # Map planes
+    planesMapper = vtkDataSetMapper()
+    planesMapper.SetInputConnection(append.GetOutputPort())
+    planesMapper.SetScalarRange(0, 7)
+
+    actor.SetMapper(planesMapper)
+    actor.GetProperty().SetAmbient(1.0)
+    return
+
+
+def create_outline(source, actor):
+    outline = vtkOutlineFilter()
+    outline.SetInputConnection(source.GetOutputPort())
+    mapper = vtkPolyDataMapper()
+    mapper.SetInputConnection(outline.GetOutputPort())
+    actor.SetMapper(mapper)
+    return
+
+
+# 관절 생성 함수
+def create_joint(radius=0.025, color=(0.1, 0.9, 0.2), transform=None):
+    source = vtkSphereSource()
+    source.SetRadius(radius)
+    mapper = vtkPolyDataMapper()
+    mapper.SetInputConnection(source.GetOutputPort())
+    actor = vtkActor()
+    actor.SetMapper(mapper)
+    if transform:
+        actor.SetUserTransform(transform)
+    actor.GetProperty().SetColor(color)
+    return actor, source, transform
+
+
+# 마디 생성 함수
+def create_phalanx(
+    width=0.15, height=0.2, depth=0.1, color=(0.8, 0.7, 0.6), transform=None
+):
+    # 캡슐 반지름은 너비의 절반 정도로 설정
+    radius = width / 2
+    return create_capsule(
+        height=height, radius=radius, color=color, transform=transform
+    )
+    source = vtkCubeSource()
+    source.SetXLength(width)
+    source.SetYLength(height)
+    source.SetZLength(depth)
+    mapper = vtkPolyDataMapper()
+    mapper.SetInputConnection(source.GetOutputPort())
+    actor = vtkActor()
+    actor.SetMapper(mapper)
+    if transform:
+        actor.SetUserTransform(transform)
+    actor.GetProperty().SetColor(color)
+    return actor, source, transform
+
+
+def create_palm(
+    width=1.2, height=0.4, depth=1.35, color=(0.8, 0.7, 0.6), transform=None
+):
+    """둥근 모서리(rounded box) 형태의 손바닥 생성"""
+    source = vtkSuperquadricSource()
+    source.SetToroidal(0)  # 토러스가 아닌 일반 슈퍼쿼드릭
+    source.SetPhiRoundness(0.8)  # φ 방향 라운딩 정도 (0.1~2.0)
+    source.SetThetaRoundness(0.8)  # θ 방향 라운딩 정도
+    source.SetThickness(0.8)  # 필렛(모서리 둥글기) 정도
+    # 슈퍼쿼드릭 기본 크기는 [-1,1] 범위이므로 절반 값으로 스케일
+    source.SetScale(width / 2, height / 2, depth / 2)
+    source.SetPhiResolution(32)  # 더 부드러운 표면을 위한 해상도
+    source.SetThetaResolution(32)
+
+    mapper = vtkPolyDataMapper()
+    mapper.SetInputConnection(source.GetOutputPort())
+
+    actor = vtkActor()
+    actor.SetMapper(mapper)
+    if transform:
+        actor.SetUserTransform(transform)
+    actor.GetProperty().SetColor(color)
+
+    return actor, source, transform
+
+
+def create_tapered_cylinder(height=1.0, radius1=0.10, radius2=0.18, resolution=32):
+    """
+    테이퍼링된 실린더(팔뚝 모양)를 vtkPolyData로 생성
+    radius1: 위쪽(손목 쪽, 더 가늘게)
+    radius2: 아래쪽(팔뚝 쪽, 더 두껍게)
+    height: 실린더 높이
+    """
+    import vtkmodules.vtkCommonCore
+    import vtkmodules.vtkCommonDataModel
+
+    points = vtkmodules.vtkCommonCore.vtkPoints()
+    polys = vtkmodules.vtkCommonDataModel.vtkCellArray()
+    
+    # 중심점 추가 (위쪽과 아래쪽 캡용)
+    topCenter = points.InsertNextPoint(0, height / 2, 0)
+    bottomCenter = points.InsertNextPoint(0, -height / 2, 0)
+
+    # 위쪽(손목, 더 가늘게) 원
+    top_points_start = points.GetNumberOfPoints()
+    for i in range(resolution):
+        angle = 2 * math.pi * i / resolution
+        x = radius1 * math.cos(angle)
+        y = height / 2
+        z = radius1 * math.sin(angle)
+        points.InsertNextPoint(x, y, z)
+    
+    # 아래쪽(팔뚝, 더 두껍게) 원
+    bottom_points_start = points.GetNumberOfPoints()
+    for i in range(resolution):
+        angle = 2 * math.pi * i / resolution
+        x = radius2 * math.cos(angle)
+        y = -height / 2
+        z = radius2 * math.sin(angle)
+        points.InsertNextPoint(x, y, z)
+
+    # 옆면 폴리곤 생성 (사각형)
+    for i in range(resolution):
+        p0 = top_points_start + i
+        p1 = top_points_start + ((i + 1) % resolution)
+        p2 = bottom_points_start + ((i + 1) % resolution)
+        p3 = bottom_points_start + i
+        
+        quad = vtkmodules.vtkCommonCore.vtkIdList()
+        quad.InsertNextId(p0)
+        quad.InsertNextId(p1)
+        quad.InsertNextId(p2)
+        quad.InsertNextId(p3)
+        polys.InsertNextCell(quad)
+    
+    # 위쪽 캡 폴리곤 생성 (삼각형)
+    for i in range(resolution):
+        triangle = vtkmodules.vtkCommonCore.vtkIdList()
+        triangle.InsertNextId(topCenter)
+        triangle.InsertNextId(top_points_start + i)
+        triangle.InsertNextId(top_points_start + ((i + 1) % resolution))
+        polys.InsertNextCell(triangle)
+    
+    # 아래쪽 캡 폴리곤 생성 (삼각형) - 주의: 법선 방향을 올바르게 하기 위해 순서 변경
+    for i in range(resolution):
+        triangle = vtkmodules.vtkCommonCore.vtkIdList()
+        triangle.InsertNextId(bottomCenter)
+        triangle.InsertNextId(bottom_points_start + ((i + 1) % resolution))
+        triangle.InsertNextId(bottom_points_start + i)
+        polys.InsertNextCell(triangle)
+
+    polydata = vtkmodules.vtkCommonDataModel.vtkPolyData()
+    polydata.SetPoints(points)
+    polydata.SetPolys(polys)
+    
+    return polydata
+
+
+def create_wrist(
+    width=0.5, height=1.0, depth=0.5, color=(0.8, 0.7, 0.6), transform=None
+):
+    """테이퍼링된 원통형 팔목 생성"""
+    # 위쪽(손목)이 더 가늘고, 아래쪽(팔뚝)이 더 두껍게
+    tapered_poly = create_tapered_cylinder(
+        height=height,
+        radius1=width / 3,      # 위쪽(손목) 반지름 (더 가늘게)
+        radius2=depth / 2.2,    # 아래쪽(팔뚝) 반지름 (더 작게)
+        resolution=64           # 해상도 높임 (32에서 64로)
+    )
+    mapper = vtkPolyDataMapper()
+    mapper.SetInputData(tapered_poly)
+
+    actor = vtkActor()
+    actor.SetMapper(mapper)
+    if transform:
+        actor.SetUserTransform(transform)
+    
+    # 매끄러운 표면을 위한 속성 설정
+    # prop = actor.GetProperty()
+    # prop.SetColor(color)
+    # prop.SetSpecular(0.4)       # 반사광 추가
+    # prop.SetSpecularPower(20)   # 반사광 세기
+    # prop.SetAmbient(0.1)        # 주변광 약간 추가
+    # prop.SetDiffuse(0.8)        # 확산광 증가
+    # prop.SetInterpolationToPhong()  # Phong 쉐이딩으로 매끄럽게
+
+    return actor, tapered_poly, transform
+
+
+# 쿼터니언 관련 유틸리티 함수 추가
+def quaternion_to_euler(w, x, y, z):
+    """쿼터니언(w, x, y, z)을 오일러 각도(도)로 변환"""
+    # Roll (x축 회전)
+    sinr_cosp = 2 * (w * x + y * z)
+    cosr_cosp = 1 - 2 * (x * x + y * y)
+    roll = math.atan2(sinr_cosp, cosr_cosp)
+
+    # Pitch (y축 회전)
+    sinp = 2 * (w * y - z * x)
+    if abs(sinp) >= 1:
+        pitch = math.copysign(math.pi / 2, sinp)  # 범위를 벗어나면 90도 사용
+    else:
+        pitch = math.asin(sinp)
+
+    # Yaw (z축 회전)
+    siny_cosp = 2 * (w * z + x * y)
+    cosy_cosp = 1 - 2 * (y * y + z * z)
+    yaw = math.atan2(siny_cosp, cosy_cosp)
+
+    # 라디안에서 도(degree)로 변환
+    roll = math.degrees(roll)
+    pitch = math.degrees(pitch)
+    yaw = math.degrees(yaw)
+
+    return roll, pitch, yaw
+
+
+def quaternion_to_matrix(w, x, y, z):
+    """쿼터니언을 VTK 행렬로 변환"""
+    matrix = vtkMatrix4x4()
+
+    # 쿼터니언에서 행렬 요소 계산
+    xx = x * x
+    xy = x * y
+    xz = x * z
+    xw = x * w
+
+    yy = y * y
+    yz = y * z
+    yw = y * w
+
+    zz = z * z
+    zw = z * w
+
+    # 회전 행렬 설정 (3x3 부분)
+    matrix.SetElement(0, 0, 1 - 2 * (yy + zz))
+    matrix.SetElement(0, 1, 2 * (xy - zw))
+    matrix.SetElement(0, 2, 2 * (xz + yw))
+
+    matrix.SetElement(1, 0, 2 * (xy + zw))
+    matrix.SetElement(1, 1, 1 - 2 * (xx + zz))
+    matrix.SetElement(1, 2, 2 * (yz - xw))
+
+    matrix.SetElement(2, 0, 2 * (xz - yw))
+    matrix.SetElement(2, 1, 2 * (yz + xw))
+    matrix.SetElement(2, 2, 1 - 2 * (xx + yy))
+
+    # 이동 요소는 0으로 설정
+    matrix.SetElement(0, 3, 0)
+    matrix.SetElement(1, 3, 0)
+    matrix.SetElement(2, 3, 0)
+    matrix.SetElement(3, 0, 0)
+    matrix.SetElement(3, 1, 0)
+    matrix.SetElement(3, 2, 0)
+    matrix.SetElement(3, 3, 1)
+
+    return matrix
+
+
+def apply_quaternion_to_transform(transform, w, x, y, z):
+    """쿼터니언 회전을 VTK 변환 객체에 적용"""
+    # 쿼터니언을 행렬로 변환
+    matrix = quaternion_to_matrix(w, x, y, z)
+
+    # 변환 객체에 행렬 적용
+    transform.SetMatrix(matrix)
+
+    return transform
+
+
+# 쿼터니언 관련 추가 유틸리티 함수
+def quaternion_multiply(q1, q2):
+    """두 쿼터니언 q1, q2의 곱을 계산"""
+    w1, x1, y1, z1 = q1
+    w2, x2, y2, z2 = q2
+
+    w = w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2
+    x = w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2
+    y = w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2
+    z = w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2
+
+    return w, x, y, z
+
+
+def quaternion_inverse(q):
+    """쿼터니언의 역(inverse)을 계산"""
+    w, x, y, z = q
+    norm_sq = w * w + x * x + y * y + z * z
+
+    if norm_sq < 1e-10:  # 0에 가까운 경우 처리
+        return 1, 0, 0, 0
+
+    inv_norm_sq = 1.0 / norm_sq
+    return w * inv_norm_sq, -x * inv_norm_sq, -y * inv_norm_sq, -z * inv_norm_sq
+
+
+def get_relative_quaternion(initial_q, current_q):
+    """초기 쿼터니언 기준 현재 쿼터니언의 상대적 회전 계산"""
+    inv_initial = quaternion_inverse(
+        (initial_q["w"], initial_q["x"], initial_q["y"], initial_q["z"])
+    )
+    current = (current_q["w"], current_q["x"], current_q["y"], current_q["z"])
+
+    # 초기 쿼터니언의 역(inverse)과 현재 쿼터니언을 곱해 상대 회전 계산
+    relative_q = quaternion_multiply(current, inv_initial)
+
+    return {
+        "w": relative_q[0],
+        "x": relative_q[1],
+        "y": relative_q[2],
+        "z": relative_q[3],
+    }
+
+
+# 전역 변수 설정
+colors = vtkNamedColors()
+finger_transforms = {}  # 각 손가락 마디의 변환 객체 저장
+finger_actors = {}  # 각 손가락 마디의 액터 저장
+render_window = None  # 렌더윈도우 전역 참조
+interactor = None  # 인터랙터 전역 참조
+joint_actors = []  # 손가락 관절 액터 저장 리스트
+hand_joint_transforms = []  # 손가락 관절 트랜스폼 글로벌 참조
+
+# 전역 변수 설정
+colors = vtkNamedColors()
+finger_transforms = {}  # 각 손가락 마디의 변환 객체 저장
+finger_actors = {}  # 각 손가락 마디의 액터 저장
+render_window = None  # 렌더윈도우 전역 참조
+interactor = None  # 인터랙터 전역 참조
+joint_actors = []  # 손가락 관절 액터 저장 리스트
+hand_joint_transforms = []  # 손가락 관절 트랜스폼 글로벌 참조
+# 웹소켓 연결 관련 변수 제거
+
+
+def create_quadric_visualization(colors):
+    # Collection of all actors to return
+    actors = []
+
+    # Sample quadric function
+    quadric = vtkQuadric()
+    quadric.SetCoefficients(1, 2, 3, 0, 1, 0, 0, 0, 0, 0)
+
+    sample = vtkSampleFunction()
+    sample.SetSampleDimensions(25, 25, 25)
+    sample.SetImplicitFunction(quadric)
+
+    # Create isosurface
+    isoActor = vtkActor()
+    create_isosurface(sample, isoActor)
+    actors.append(isoActor)
+
+    outlineIsoActor = vtkActor()
+    create_outline(sample, outlineIsoActor)
+    actors.append(outlineIsoActor)
+
+    # Create planes
+    planesActor = vtkActor()
+    create_planes(sample, planesActor, 3)
+    planesActor.AddPosition(isoActor.GetBounds()[0] * 2.0, 0, 0)
+    actors.append(planesActor)
+
+    outlinePlanesActor = vtkActor()
+    create_outline(sample, outlinePlanesActor)
+    outlinePlanesActor.AddPosition(isoActor.GetBounds()[0] * 2.0, 0, 0)
+    actors.append(outlinePlanesActor)
+
+    # Create contours
+    contourActor = vtkActor()
+    create_contours(sample, contourActor, 3, 15)
+    contourActor.AddPosition(isoActor.GetBounds()[0] * 4.0, 0, 0.8)
+    actors.append(contourActor)
+
+    outlineContourActor = vtkActor()
+    create_outline(sample, outlineContourActor)
+    outlineContourActor.AddPosition(isoActor.GetBounds()[0] * 4.0, 0, 0)
+    actors.append(outlineContourActor)
+
+    return actors
+
+
+def create_isosurface(func, actor, numberOfContours=5):
+    # Generate implicit surface
+    contour = vtkContourFilter()
+    contour.SetInputConnection(func.GetOutputPort())
+    ranges = [1.0, 3.0]
+    contour.GenerateValues(numberOfContours, ranges)
+
+    # Map contour
+    contourMapper = vtkPolyDataMapper()
+    contourMapper.SetInputConnection(contour.GetOutputPort())
+    contourMapper.SetScalarRange(0, 9)
+
+    actor.SetMapper(contourMapper)
+    return
+
+
+def create_planes(func, actor, numberOfPlanes):
+    # Extract planes from implicit function
+    append = vtkAppendFilter()
+
+    dims = func.GetSampleDimensions()
+    sliceIncr = (dims[2] - 1) // (numberOfPlanes + 1)
+    sliceNum = -4
+    for i in range(0, numberOfPlanes):
+        extract = vtkExtractVOI()
+        extract.SetInputConnection(func.GetOutputPort())
+        extract.SetVOI(
+            0, dims[0] - 1, 0, dims[1] - 1, sliceNum + sliceIncr, sliceNum + sliceIncr
+        )
+        append.AddInputConnection(extract.GetOutputPort())
+        sliceNum += sliceIncr
+    append.Update()
+
+    # Map planes
+    planesMapper = vtkDataSetMapper()
+    planesMapper.SetInputConnection(append.GetOutputPort())
+    planesMapper.SetScalarRange(0, 4)
+
+    actor.SetMapper(planesMapper)
+    actor.GetProperty().SetAmbient(1.0)
+    return
+
+
+def create_capsule(height=0.2, radius=0.001, color=(0.8, 0.7, 0.6), transform=None):
+    """캡슐(원통 + 양 끝 구) 형태 생성"""
+    # 1) Cylinder body
+    cylinder = vtkCylinderSource()
+    cylinder.SetRadius(radius)
+    cylinder.SetHeight(height)
+    cylinder.SetResolution(36)
+
+    # 2) Sphere ends
+    sphere_top = vtkSphereSource()
+    sphere_top.SetRadius(radius)
+    sphere_top.SetThetaResolution(36)
+    sphere_top.SetPhiResolution(36)
+    tf_top = vtkTransform()
+    tf_top.Translate(0, height / 2, 0)
+    tpf_top = vtkTransformPolyDataFilter()
+    tpf_top.SetTransform(tf_top)
+    tpf_top.SetInputConnection(sphere_top.GetOutputPort())
+
+    sphere_bot = vtkSphereSource()
+    sphere_bot.SetRadius(radius)
+    sphere_bot.SetThetaResolution(36)
+    sphere_bot.SetPhiResolution(36)
+    tf_bot = vtkTransform()
+    tf_bot.Translate(0, -height / 2, 0)
+    tpf_bot = vtkTransformPolyDataFilter()
+    tpf_bot.SetTransform(tf_bot)
+    tpf_bot.SetInputConnection(sphere_bot.GetOutputPort())
+
+    # 3) Append all
+    appender = vtkAppendPolyData()
+    appender.AddInputConnection(cylinder.GetOutputPort())
+    appender.AddInputConnection(tpf_top.GetOutputPort())
+    appender.AddInputConnection(tpf_bot.GetOutputPort())
+    appender.Update()
+
+    # 4) Mapper + Actor
+    mapper = vtkPolyDataMapper()
+    mapper.SetInputConnection(appender.GetOutputPort())
+    actor = vtkActor()
+    actor.SetMapper(mapper)
+    if transform:
+        actor.SetUserTransform(transform)
+    actor.GetProperty().SetColor(color)
+    return actor, appender, transform
+
+
+def create_contours(func, actor, numberOfPlanes, numberOfContours):
+    # Extract planes from implicit function
+    append = vtkAppendFilter()
+
+    dims = func.GetSampleDimensions()
+    sliceIncr = (dims[2] - 1) // (numberOfPlanes + 1)
+
+    sliceNum = -4
+    for i in range(0, numberOfPlanes):
+        extract = vtkExtractVOI()
+        extract.SetInputConnection(func.GetOutputPort())
+        extract.SetVOI(
+            0, dims[0] - 1, 0, dims[1] - 1, sliceNum + sliceIncr, sliceNum + sliceIncr
+        )
+        ranges = [1.0, 6.0]
+        contour = vtkContourFilter()
+        contour.SetInputConnection(extract.GetOutputPort())
+        contour.GenerateValues(numberOfContours, ranges)
+        append.AddInputConnection(contour.GetOutputPort())
+        sliceNum += sliceIncr
+    append.Update()
+
+    # Map planes
+    planesMapper = vtkDataSetMapper()
+    planesMapper.SetInputConnection(append.GetOutputPort())
+    planesMapper.SetScalarRange(0, 7)
+
+    actor.SetMapper(planesMapper)
+    actor.GetProperty().SetAmbient(1.0)
+    return
+
+
+def create_outline(source, actor):
+    outline = vtkOutlineFilter()
+    outline.SetInputConnection(source.GetOutputPort())
+    mapper = vtkPolyDataMapper()
+    mapper.SetInputConnection(outline.GetOutputPort())
+    actor.SetMapper(mapper)
+    return
+
+
+# 관절 생성 함수
+def create_joint(radius=0.025, color=(0.1, 0.9, 0.2), transform=None):
+    source = vtkSphereSource()
+    source.SetRadius(radius)
+    mapper = vtkPolyDataMapper()
+    mapper.SetInputConnection(source.GetOutputPort())
+    actor = vtkActor()
+    actor.SetMapper(mapper)
+    if transform:
+        actor.SetUserTransform(transform)
+    actor.GetProperty().SetColor(color)
+    return actor, source, transform
+
+
+# 마디 생성 함수
+def create_phalanx(
+    width=0.15, height=0.2, depth=0.1, color=(0.8, 0.7, 0.6), transform=None
+):
+    # 캡슐 반지름은 너비의 절반 정도로 설정
+    radius = width / 2
+    return create_capsule(
+        height=height, radius=radius, color=color, transform=transform
+    )
+    source = vtkCubeSource()
+    source.SetXLength(width)
+    source.SetYLength(height)
+    source.SetZLength(depth)
+    mapper = vtkPolyDataMapper()
+    mapper.SetInputConnection(source.GetOutputPort())
+    actor = vtkActor()
+    actor.SetMapper(mapper)
+    if transform:
+        actor.SetUserTransform(transform)
+    actor.GetProperty().SetColor(color)
+    return actor, source, transform
+
+
+def create_palm(
+    width=1.2, height=0.4, depth=1.35, color=(0.8, 0.7, 0.6), transform=None
+):
+    """둥근 모서리(rounded box) 형태의 손바닥 생성"""
+    source = vtkSuperquadricSource()
+    source.SetToroidal(0)  # 토러스가 아닌 일반 슈퍼쿼드릭
+    source.SetPhiRoundness(0.8)  # φ 방향 라운딩 정도 (0.1~2.0)
+    source.SetThetaRoundness(0.8)  # θ 방향 라운딩 정도
+    source.SetThickness(0.8)  # 필렛(모서리 둥글기) 정도
+    # 슈퍼쿼드릭 기본 크기는 [-1,1] 범위이므로 절반 값으로 스케일
+    source.SetScale(width / 2, height / 2, depth / 2)
+    source.SetPhiResolution(32)  # 더 부드러운 표면을 위한 해상도
+    source.SetThetaResolution(32)
+
+    mapper = vtkPolyDataMapper()
+    mapper.SetInputConnection(source.GetOutputPort())
+
+    actor = vtkActor()
+    actor.SetMapper(mapper)
+    if transform:
+        actor.SetUserTransform(transform)
+    actor.GetProperty().SetColor(color)
+
+    return actor, source, transform
+
+
+def create_tapered_cylinder(height=1.0, radius1=0.10, radius2=0.18, resolution=32):
+    """
+    테이퍼링된 실린더(팔뚝 모양)를 vtkPolyData로 생성
+    radius1: 위쪽(손목 쪽, 더 가늘게)
+    radius2: 아래쪽(팔뚝 쪽, 더 두껍게)
+    height: 실린더 높이
+    """
+    import vtkmodules.vtkCommonCore
+    import vtkmodules.vtkCommonDataModel
+
+    points = vtkmodules.vtkCommonCore.vtkPoints()
+    polys = vtkmodules.vtkCommonDataModel.vtkCellArray()
+    
+    # 중심점 추가 (위쪽과 아래쪽 캡용)
+    topCenter = points.InsertNextPoint(0, height / 2, 0)
+    bottomCenter = points.InsertNextPoint(0, -height / 2, 0)
+
+    # 위쪽(손목, 더 가늘게) 원
+    top_points_start = points.GetNumberOfPoints()
+    for i in range(resolution):
+        angle = 2 * math.pi * i / resolution
+        x = radius1 * math.cos(angle)
+        y = height / 2
+        z = radius1 * math.sin(angle)
+        points.InsertNextPoint(x, y, z)
+    
+    # 아래쪽(팔뚝, 더 두껍게) 원
+    bottom_points_start = points.GetNumberOfPoints()
+    for i in range(resolution):
+        angle = 2 * math.pi * i / resolution
+        x = radius2 * math.cos(angle)
+        y = -height / 2
+        z = radius2 * math.sin(angle)
+        points.InsertNextPoint(x, y, z)
+
+    # 옆면 폴리곤 생성 (사각형)
+    for i in range(resolution):
+        p0 = top_points_start + i
+        p1 = top_points_start + ((i + 1) % resolution)
+        p2 = bottom_points_start + ((i + 1) % resolution)
+        p3 = bottom_points_start + i
+        
+        quad = vtkmodules.vtkCommonCore.vtkIdList()
+        quad.InsertNextId(p0)
+        quad.InsertNextId(p1)
+        quad.InsertNextId(p2)
+        quad.InsertNextId(p3)
+        polys.InsertNextCell(quad)
+    
+    # 위쪽 캡 폴리곤 생성 (삼각형)
+    for i in range(resolution):
+        triangle = vtkmodules.vtkCommonCore.vtkIdList()
+        triangle.InsertNextId(topCenter)
+        triangle.InsertNextId(top_points_start + i)
+        triangle.InsertNextId(top_points_start + ((i + 1) % resolution))
+        polys.InsertNextCell(triangle)
+    
+    # 아래쪽 캡 폴리곤 생성 (삼각형) - 주의: 법선 방향을 올바르게 하기 위해 순서 변경
+    for i in range(resolution):
+        triangle = vtkmodules.vtkCommonCore.vtkIdList()
+        triangle.InsertNextId(bottomCenter)
+        triangle.InsertNextId(bottom_points_start + ((i + 1) % resolution))
+        triangle.InsertNextId(bottom_points_start + i)
+        polys.InsertNextCell(triangle)
+
+    polydata = vtkmodules.vtkCommonDataModel.vtkPolyData()
+    polydata.SetPoints(points)
+    polydata.SetPolys(polys)
+    
+    return polydata
+
+
+def create_wrist(
+    width=0.5, height=1.0, depth=0.5, color=(0.8, 0.7, 0.6), transform=None
+):
+    """테이퍼링된 원통형 팔목 생성"""
+    # 위쪽(손목)이 더 가늘고, 아래쪽(팔뚝)이 더 두껍게
+    tapered_poly = create_tapered_cylinder(
+        height=height,
+        radius1=width / 3,      # 위쪽(손목) 반지름 (더 가늘게)
+        radius2=depth / 2.2,    # 아래쪽(팔뚝) 반지름 (더 작게)
+        resolution=64           # 해상도 높임 (32에서 64로)
+    )
+    mapper = vtkPolyDataMapper()
+    mapper.SetInputData(tapered_poly)
+
+    actor = vtkActor()
+    actor.SetMapper(mapper)
+    if transform:
+        actor.SetUserTransform(transform)
+    
+    # 매끄러운 표면을 위한 속성 설정
+    prop = actor.GetProperty()
+    prop.SetColor(color)
+    # prop.SetSpecular(0.4)       # 반사광 추가
+    # prop.SetSpecularPower(20)   # 반사광 세기
+    # prop.SetAmbient(0.1)        # 주변광 약간 추가
+    # prop.SetDiffuse(0.8)        # 확산광 증가
+    # prop.SetInterpolationToPhong()  # Phong 쉐이딩으로 매끄럽게
+
+    return actor, tapered_poly, transform
 
 
 # transform 함수
@@ -453,7 +2007,7 @@ def transform(
 
 
 # 인터랙터 스타일 클래스 - 액터 선택 및 회전 기능 (hand.py에서 가져옴)
-class MouseInteractorHighLightActor(vtk.vtkInteractorStyleTrackballCamera):
+class MouseInteractorHighLightActor(vtkInteractorStyleTrackballCamera):
     def __init__(
         self, parent=None, renderer=None, render_window=None, joint_transforms=None
     ):
@@ -466,14 +2020,14 @@ class MouseInteractorHighLightActor(vtk.vtkInteractorStyleTrackballCamera):
         self.render_window = render_window
         self.joint_transforms = joint_transforms
         self.LastPickedActor = None
-        self.LastPickedProperty = vtk.vtkProperty()
+        self.LastPickedProperty = vtkProperty()
         self.original_colors = {}
         self.chopstick_mode_active = False
         self.joint_state = {}
 
     def leftButtonPressEvent(self, obj, event):
         clickPos = self.GetInteractor().GetEventPosition()
-        picker = vtk.vtkPropPicker()
+        picker = vtkPropPicker()
         picker.Pick(clickPos[0], clickPos[1], 0, self.renderer)
 
         self.NewPickedActor = picker.GetActor()
@@ -494,7 +2048,7 @@ class MouseInteractorHighLightActor(vtk.vtkInteractorStyleTrackballCamera):
             self.NewPickedActor.GetProperty().GetColor(curr)
             self.original_colors[self.NewPickedActor] = curr
 
-            self.NewPickedProperty = vtk.vtkProperty()
+            self.NewPickedProperty = vtkProperty()
             self.NewPickedProperty.DeepCopy(self.NewPickedActor.GetProperty())
             self.NewPickedActor.GetProperty().SetColor(1.0, 0.0, 0.0)
 
@@ -527,25 +2081,50 @@ class MouseInteractorHighLightActor(vtk.vtkInteractorStyleTrackballCamera):
         # 굽힘 또는 폄 방향 선택
         delta = -5 if not is_bent else 5
 
-        # 엄지와 기타 손가락 분리 - 엄지는 Y축 방향으로 굽히기
+        # 엄지와 기타 손가락 분리 - 엄지는 특별한 축 설정
         if finger_idx == 0:  # 엄지손가락
             if joint_idx == 0:
-                axis = (delta, 0, 0)  # 첫 번째 관절은 X축
+                # 첫 번째 관절: pinch_gesture와 유사한 복합 축 사용
+                axis_vector = (-0.9, -0.8, 0.65)
+                angle_per_step = 3.0 if not is_bent else -3.0
+                
+                # 쿼터니언 방식으로 회전
+                for _ in range(0, max_angle, abs(int(angle_per_step))):
+                    self.apply_quaternion_rotation(
+                        self.joint_transforms[finger_idx][joint_idx],
+                        axis=axis_vector,
+                        angle_deg=angle_per_step
+                    )
+                    self.render_window.Render()
+                    time.sleep(0.03)
             else:
-                axis = (0, delta, 0)  # 두 번째, 세 번째 관절은 Y축 방향으로 굽히기
+                # 두 번째 관절: pinch_gesture와 유사한 복합 축 사용
+                axis_vector = (-0.5, 0.2, -0.3)
+                angle_per_step = 2.0 if not is_bent else -2.0
+                
+                # 쿼터니언 방식으로 회전
+                for _ in range(0, max_angle, abs(int(angle_per_step))):
+                    self.apply_quaternion_rotation(
+                        self.joint_transforms[finger_idx][joint_idx],
+                        axis=axis_vector,
+                        angle_deg=angle_per_step
+                    )
+                    self.render_window.Render()
+                    time.sleep(0.03)
         else:  # 다른 손가락들
             axis = (delta, 0, 0)  # X축 방향으로 굽히기
-
-        # 애니메이션
-        for _ in range(0, max_angle, abs(delta)):
-            transform(
-                self.joint_transforms[finger_idx][joint_idx],
-                rotate=axis,
-            )
-            self.render_window.Render()
-            time.sleep(0.03)
+            
+            # 기존 방식으로 회전
+            for _ in range(0, max_angle, abs(delta)):
+                transform(
+                    self.joint_transforms[finger_idx][joint_idx],
+                    rotate=axis,
+                )
+                self.render_window.Render()
+                time.sleep(0.03)
 
         self.joint_state[key] = not is_bent
+        print(f"관절 상태 업데이트: finger_idx={finger_idx}, joint_idx={joint_idx}, bent={self.joint_state[key]}")
 
     def on_key_press(self, obj, event):
         """숫자키로 다양한 손동작 제어"""
@@ -554,7 +2133,14 @@ class MouseInteractorHighLightActor(vtk.vtkInteractorStyleTrackballCamera):
         if not self.joint_transforms:
             super().OnKeyPress()
             return
-        if key == "1":
+        if key.lower() == 'c':
+        # 현재 카메라 위치와 포커스 포인트 출력
+            camera = self.renderer.GetActiveCamera()
+            position = camera.GetPosition()
+            focal_point = camera.GetFocalPoint()
+            print(f"cam_right.SetPosition({position[0]:.2f}, {position[1]:.2f}, {position[2]:.2f})")
+            print(f"cam_right.SetFocalPoint({focal_point[0]:.2f}, {focal_point[1]:.2f}, {focal_point[2]:.2f})")
+        elif key == "1":
             self.point_gesture()
         elif key == "2":
             self.peace_gesture()
@@ -583,10 +2169,8 @@ class MouseInteractorHighLightActor(vtk.vtkInteractorStyleTrackballCamera):
             time.sleep(0.5)
             self.animate_hand_twist(0)
         elif key == "7":
-            for finger_idx in [0,1,2,3,4]:
-                if finger_idx < len(self.joint_transforms):
-                    for joint_idx in range(len(self.joint_transforms[finger_idx])):
-                        self.rotateJoint(finger_idx, joint_idx)
+            # 7번: 손가락을 처음 시작 자세로 초기화
+            self.reset_to_initial_pose()
         elif key == '0':
             # 0 키: 손바닥(palm)과 손등(back) 뒤집기 애니메이션
             self.animate_hand_flip(180)
@@ -622,14 +2206,35 @@ class MouseInteractorHighLightActor(vtk.vtkInteractorStyleTrackballCamera):
         self.reset_all_fingers()
         time.sleep(0.5)
         
-        # 중지, 약지, 소지만 굽히기 (인덱스 2, 3, 4)
-        for finger_idx in [2, 3, 4]:
+        # 중지, 약지, 소지만 굽히기 (인덱스 2, 3, 4) - 동시 애니메이션
+        fingers_to_curl = [2, 3, 4]
+        max_angle = 80
+        steps = 20
+        angle_per_step = max_angle / steps
+        
+        # 모든 관절 정보 수집
+        joints_to_animate = []
+        for finger_idx in fingers_to_curl:
             if finger_idx < len(self.joint_transforms):
                 for joint_idx in range(len(self.joint_transforms[finger_idx])):
                     key = (finger_idx, joint_idx)
                     if not self.joint_state.get(key, False):
-                        self.rotateJoint(finger_idx, joint_idx)
-                        time.sleep(0.1)
+                        joints_to_animate.append((finger_idx, joint_idx))
+        
+        # 동시 애니메이션
+        for step in range(steps):
+            for finger_idx, joint_idx in joints_to_animate:
+                transform(
+                    self.joint_transforms[finger_idx][joint_idx],
+                    rotate=(-angle_per_step, 0, 0),
+                )
+            
+            self.render_window.Render()
+            time.sleep(0.03)
+        
+        # 관절 상태 업데이트
+        for finger_idx, joint_idx in joints_to_animate:
+            self.joint_state[(finger_idx, joint_idx)] = True
 
     def peace_gesture(self):
         """검지와 중지로 V자 동작"""
@@ -652,14 +2257,60 @@ class MouseInteractorHighLightActor(vtk.vtkInteractorStyleTrackballCamera):
             middle_finger_joint0_transform = self.joint_transforms[2][0]
             transform(middle_finger_joint0_transform, rotate=(0, 0, -12))
         
-        # 엄지, 약지, 소지만 굽히기 (인덱스 0, 3, 4)
-        for finger_idx in [0, 3, 4]:
+        # 엄지, 약지, 소지만 굽히기 (인덱스 0, 3, 4) - 동시 애니메이션
+        fingers_to_curl = [0, 3, 4]
+        max_angle = 80
+        steps = 25
+        
+        # 모든 관절 정보 수집 (엄지와 다른 손가락 분리)
+        thumb_joints = []
+        other_joints = []
+        
+        for finger_idx in fingers_to_curl:
             if finger_idx < len(self.joint_transforms):
                 for joint_idx in range(len(self.joint_transforms[finger_idx])):
                     key = (finger_idx, joint_idx)
                     if not self.joint_state.get(key, False):
-                        self.rotateJoint(finger_idx, joint_idx)
-                        time.sleep(0.1)
+                        if finger_idx == 0:  # 엄지
+                            thumb_joints.append((finger_idx, joint_idx))
+                        else:  # 다른 손가락들
+                            other_joints.append((finger_idx, joint_idx))
+        
+        # 동시 애니메이션
+        for step in range(steps):
+            # 엄지손가락 처리 (쿼터니언 방식)
+            for finger_idx, joint_idx in thumb_joints:
+                if joint_idx == 0:
+                    axis_vector = (-0.9, -0.8, 0.65)
+                    angle_per_step = 3.0
+                    self.apply_quaternion_rotation(
+                        self.joint_transforms[finger_idx][joint_idx],
+                        axis=axis_vector,
+                        angle_deg=angle_per_step
+                    )
+                else:  # joint_idx == 1 (두 번째 관절)
+                    axis_vector = (-0.5, 0.2, -0.3)
+                    angle_per_step = 2.0
+                    self.apply_quaternion_rotation(
+                        self.joint_transforms[finger_idx][joint_idx],
+                        axis=axis_vector,
+                        angle_deg=angle_per_step
+                    )
+            
+            # 다른 손가락들 처리 (기존 방식)
+            for finger_idx, joint_idx in other_joints:
+                angle_per_step = max_angle / steps
+                transform(
+                    self.joint_transforms[finger_idx][joint_idx],
+                    rotate=(-angle_per_step, 0, 0),
+                )
+            
+            self.render_window.Render()
+            time.sleep(0.03)
+        
+        # 관절 상태 업데이트
+        for finger_idx, joint_idx in thumb_joints + other_joints:
+            self.joint_state[(finger_idx, joint_idx)] = True
 
     def curl_finger(self, finger_idx):
         """특정 손가락만 굽히기/펴기"""
@@ -744,6 +2395,108 @@ class MouseInteractorHighLightActor(vtk.vtkInteractorStyleTrackballCamera):
             time.sleep(delay)
             
         return transform_obj
+    
+    def reset_to_initial_pose(self):
+        """모든 손가락을 처음 시작 자세로 완전히 초기화"""
+        if not self.joint_transforms:
+            return
+            
+        print("손가락을 처음 시작 자세로 초기화 중...")
+        
+        # palm_transform 전역 변수 사용
+        global palm_transform, wrist_transform
+        
+        # 손가락 위치 정보 (create_hand_actors에서와 동일)
+        finger_positions = [
+            # 엄지 위치
+            {"pos": (-0.31, -0.01, -0.0), "angle": (0, 20, 30)},
+            # 검지 위치
+            {"pos": (-0.19, 0.28, 0.0), "angle": (0, 0, 6)},
+            # 중지 위치
+            {"pos": (-0.06, 0.32, 0.0), "angle": (0, 0, 0)},
+            # 약지 위치
+            {"pos": (0.07, 0.28, 0.0), "angle": (0, 0, -5)},
+            # 소지 위치
+            {"pos": (0.22, 0.22, 0.0), "angle": (0, 0, -5)},
+        ]
+        
+        joint_radius = 0.02
+        
+        # 손목과 손바닥 각도를 먼저 초기화
+        if wrist_transform is not None:
+            wrist_transform.Identity()
+            transform(wrist_transform, translate=(0, 0, 0.5), rotate=(-90, 0, 0))
+        
+        if palm_transform is not None:
+            palm_transform.Identity()
+            palm_transform.SetInput(wrist_transform)
+            transform(palm_transform, translate=(0, 0.835, 0))
+            transform(palm_transform, rotate=(0, 0, 0))
+        
+        # 모든 손가락을 초기 자세로 복원
+        for finger_idx in range(len(self.joint_transforms)):
+            if finger_idx < len(finger_positions):
+                finger_pos = finger_positions[finger_idx]
+                
+                # 첫 번째 관절 초기화
+                joint0_transform = self.joint_transforms[finger_idx][0]
+                joint0_transform.Identity()
+                joint0_transform.SetInput(palm_transform)  # 손바닥에 연결
+                transform(
+                    joint0_transform,
+                    translate=finger_pos["pos"],
+                    rotate=finger_pos["angle"]
+                )
+                
+                # 첫 번째 마디 크기 설정
+                height1 = (
+                    0.15 if finger_idx == 0
+                    else (0.2 if finger_idx == 2 else (0.15 if finger_idx == 4 else 0.18))
+                )
+                
+                # 두 번째 관절이 있는 경우
+                if len(self.joint_transforms[finger_idx]) > 1:
+                    joint1_transform = self.joint_transforms[finger_idx][1]
+                    joint1_transform.Identity()
+                    joint1_transform.SetInput(joint0_transform)  # 첫 번째 관절에 연결
+                    # 정확한 오프셋 계산
+                    offset = height1 + joint_radius
+                    transform(joint1_transform, translate=(0.0, offset, 0.0))
+                    
+                    # 두 번째 마디 크기 설정
+                    height2 = (
+                        0.12 if finger_idx == 0
+                        else (0.17 if finger_idx == 2 else (0.13 if finger_idx == 4 else 0.15))
+                    )
+                    
+                    # 세 번째 관절이 있는 경우 (엄지가 아닌 경우)
+                    if len(self.joint_transforms[finger_idx]) > 2 and finger_idx != 0:
+                        joint2_transform = self.joint_transforms[finger_idx][2]
+                        joint2_transform.Identity()
+                        joint2_transform.SetInput(joint1_transform)  # 두 번째 관절에 연결
+                        # 정확한 오프셋 계산
+                        offset = height2 + joint_radius
+                        transform(joint2_transform, translate=(0.0, offset, 0.0))
+        
+        # 모든 관절 상태를 펴진 상태(False)로 초기화
+        self.joint_state.clear()
+        
+        # 젓가락 모드도 비활성화
+        self.chopstick_mode_active = False
+        
+        # 현재 각도 추적 변수들도 초기화
+        if hasattr(self, 'current_hand_angle'):
+            self.current_hand_angle = 0
+        if hasattr(self, 'current_wrist_twist_angle'):
+            self.current_wrist_twist_angle = 0
+        if hasattr(self, 'current_wrist_flip_angle'):
+            self.current_wrist_flip_angle = 0
+        if hasattr(self, 'current_wrist_angle'):
+            self.current_wrist_angle = 0
+        
+        # 화면 갱신
+        self.render_window.Render()
+        print("초기화 완료!")
 
     def pinch_gesture(self):
         """간단하고 자연스러운 OK 제스처 (엄지와 검지로 원형 만들기) - 쿼터니언 회전 적용"""
@@ -754,9 +2507,9 @@ class MouseInteractorHighLightActor(vtk.vtkInteractorStyleTrackballCamera):
         self.reset_all_fingers()
         time.sleep(0.5)
         
-        # 중지, 약지, 소지 모든 관절을 동시에 굽히기 - 동시 애니메이션
+        # 중지, 약지, 소지만 굽히기 - 동시 애니메이션
         # 애니메이션 단계 및 각도 준비
-        steps = 15
+        steps = 30
         max_angle = 70
         angle_per_step = max_angle / steps
         
@@ -787,7 +2540,7 @@ class MouseInteractorHighLightActor(vtk.vtkInteractorStyleTrackballCamera):
                     self.joint_state[key] = True
         
         self.render_window.Render()
-        time.sleep(0.3)
+        time.sleep(1.2)
         
         # 엄지와 검지 동시에 OK 형태로 만들기
         print("엄지와 검지 동시에 OK 형태로 굽히는 중...")
@@ -801,7 +2554,7 @@ class MouseInteractorHighLightActor(vtk.vtkInteractorStyleTrackballCamera):
             joints_to_rotate.append((
                 self.joint_transforms[0][0],  # 엄지 첫 번째 관절
                 (-0.9, -0.8, 0.65),          # 회전축 (X,Y,Z 복합)
-                80                           # 회전각
+                150                           # 회전각
             ))
             
             # 두 번째 관절
@@ -809,7 +2562,7 @@ class MouseInteractorHighLightActor(vtk.vtkInteractorStyleTrackballCamera):
                 joints_to_rotate.append((
                     self.joint_transforms[0][1],  # 엄지 두 번째 관절
                     (-0.5, 0.2, -0.3),           # 회전축
-                    70                           # 회전각
+                    60                           # 회전각
                 ))
             
             # 세 번째 관절
@@ -826,7 +2579,7 @@ class MouseInteractorHighLightActor(vtk.vtkInteractorStyleTrackballCamera):
             joints_to_rotate.append((
                 self.joint_transforms[1][0],  # 검지 첫 번째 관절
                 (-0.6, 0, 0.2),               # 회전축
-                45                           # 회전각
+                65                           # 회전각
             ))
             
             # 두 번째 관절
@@ -836,6 +2589,7 @@ class MouseInteractorHighLightActor(vtk.vtkInteractorStyleTrackballCamera):
                     (-1, 0, 0),                  # X축 회전
                     75                           # 회전각
                 ))
+            
             
             # 세 번째 관절
             if len(self.joint_transforms[1]) > 2:
@@ -922,31 +2676,52 @@ class MouseInteractorHighLightActor(vtk.vtkInteractorStyleTrackballCamera):
                 for joint_idx in range(len(self.joint_transforms[finger_idx])):
                     key = (finger_idx, joint_idx)
                     if not self.joint_state.get(key, False):
-                        # 애니메이션 없이 바로 굽히기
-                        max_angle = 80
-                        delta = -5
-                        # 엄지는 Y축 방향으로, 다른 손가락은 X축 방향으로 굽히기
+                        # 엄지는 쿼터니언 방식으로, 다른 손가락은 기존 방식으로
                         if finger_idx == 0:  # 엄지손가락
                             if joint_idx == 0:
-                                axis = (delta, 0, 0)  # 첫 번째 관절은 X축
-                            else:
-                                axis = (0, delta, 0)  # 두 번째, 세 번째 관절은 Y축
+                                # 첫 번째 관절: 쿼터니언 방식
+                                axis_vector = (-0.9, -0.8, 0.65)
+                                angle_per_step = 3.0
+                                for _ in range(0, 80, 3):
+                                    self.apply_quaternion_rotation(
+                                        self.joint_transforms[finger_idx][joint_idx],
+                                        axis=axis_vector,
+                                        angle_deg=angle_per_step
+                                    )
+                                    self.render_window.Render()
+                                    time.sleep(0.02)
+                            else:  # joint_idx == 1 (두 번째 관절)
+                                # 두 번째 관절: 쿼터니언 방식
+                                axis_vector = (-0.5, 0.2, -0.3)
+                                angle_per_step = 2.0
+                                for _ in range(0, 80, 2):
+                                    self.apply_quaternion_rotation(
+                                        self.joint_transforms[finger_idx][joint_idx],
+                                        axis=axis_vector,
+                                        angle_deg=angle_per_step
+                                    )
+                                    self.render_window.Render()
+                                    time.sleep(0.02)
+                            self.joint_state[key] = True
                         else:  # 다른 손가락들
+                            # 기존 방식으로 굽히기
+                            max_angle = 80
+                            delta = -5
                             axis = (delta, 0, 0)  # X축 방향으로 굽히기
-                        
-                        # 한 번에 전체 각도만큼 회전
-                        for _ in range(0, max_angle, abs(delta)):
-                            transform(
-                                self.joint_transforms[finger_idx][joint_idx],
-                                rotate=axis,
-                            )
-                        self.joint_state[key] = True
+                            
+                            # 한 번에 전체 각도만큼 회전
+                            for _ in range(0, max_angle, abs(delta)):
+                                transform(
+                                    self.joint_transforms[finger_idx][joint_idx],
+                                    rotate=axis,
+                                )
+                            self.joint_state[key] = True
         
         # 화면 갱신하여 굽힌 상태 보여주기
         self.render_window.Render()
-        print("손가락 굽히기 완료 - 2초 후 젓가락 모으기 시작")
+        print("손가락 굽히기 완료 - 1초 후 젓가락 모으기 시작")
         
-        time.sleep(1.0)  # 딜레이를 2초로 설정
+        time.sleep(1.0)  # 딜레이를 1초로 설정
         
         # 마지막에 검지와 중지를 모아서 4도 간격으로 만들기 (애니메이션)
         if len(self.joint_transforms) > 2:
@@ -988,7 +2763,7 @@ class MouseInteractorHighLightActor(vtk.vtkInteractorStyleTrackballCamera):
             time.sleep(delay)
         self.current_hand_angle = target_angle
     
-    def animate_hand_twist(self, target_angle, steps=20, delay=0.02):
+    def animate_hand_twist(self, target_angle, steps=45, delay=0.02):
         """
         손목(wrist_transform)을 Z축 기준으로 target_angle까지 부드럽게 회전
         """
@@ -1078,12 +2853,12 @@ def create_hand_actors():
     all_actors.append(palm_actor)
 
     # 팔목에 1자 선 추가 (Y축 방향, 팔목 표면에 위치)
-    line_source = vtk.vtkLineSource()
-    line_source.SetPoint1(0.05, -0.0, 0.16)
-    line_source.SetPoint2(0.05, 0.1, 0.16)
-    line_mapper = vtk.vtkPolyDataMapper()
+    line_source = vtkLineSource()
+    line_source.SetPoint1(0.115, 0.2, 0.15)
+    line_source.SetPoint2(0.115, 0.3, 0.14)
+    line_mapper = vtkPolyDataMapper()
     line_mapper.SetInputConnection(line_source.GetOutputPort())
-    line_actor = vtk.vtkActor()
+    line_actor = vtkActor()
     line_actor.SetMapper(line_mapper)
     line_actor.GetProperty().SetColor(1, 0, 0)  # 검은색
     line_actor.GetProperty().SetLineWidth(5)
@@ -1103,6 +2878,7 @@ def create_hand_actors():
     #     # 소지 위치
     #     {"pos": (-0.3, 0.31, 0.0), "angle": (0, 0, 0)},
     # ]
+    # 오른손
     finger_positions = [
         # 엄지 위치
         {"pos": (-0.31, -0.01, -0.0), "angle": (0, 20, 30)},  # 각도 방향 변경
@@ -1187,34 +2963,32 @@ def create_hand_actors():
         all_actors.append(phalanx2_actor)
         finger_actors[1].append((phalanx2_actor, phalanx2_transform))
 
-        # 세 번째 관절 생성
-        joint2_transform = vtkTransform()
-        joint2_transform.SetInput(phalanx2_transform)
-        offset = height2 / 2 + joint_radius - 0.002
-        transform(joint2_transform, translate=(0.0, offset, 0.0))
-        joint2_actor, joint2_source, _ = create_joint(
-            radius=joint_radius, transform=joint2_transform
-        )
-        all_actors.append(joint2_actor)
-        finger_joints.append(joint2_transform)
-        finger_actors.append([(joint2_actor, joint2_transform)])
+        if finger_idx != 0:
+            # 세 번째 관절 및 마디는 엄지(0번)가 아닐 때만 생성
+            joint2_transform = vtkTransform()
+            joint2_transform.SetInput(phalanx2_transform)
+            offset = height2 / 2 + joint_radius - 0.002
+            transform(joint2_transform, translate=(0.0, offset, 0.0))
+            joint2_actor, joint2_source, _ = create_joint(
+                radius=joint_radius, transform=joint2_transform
+            )
+            all_actors.append(joint2_actor)
+            finger_joints.append(joint2_transform)
+            finger_actors.append([(joint2_actor, joint2_transform)])
 
-        # 세 번째 마디 생성
-        height3 = (
-            0.1
-            if finger_idx == 0
-            else (0.14 if finger_idx == 2 else (0.09 if finger_idx == 4 else 0.12))
-        )
-        width3 = 0.1
-        phalanx3_transform = vtkTransform()
-        phalanx3_transform.SetInput(joint2_transform)
-        offset = joint_radius + height3 / 2 - 0.002
-        transform(phalanx3_transform, translate=(0.0, offset, 0.0))
-        phalanx3_actor, phalanx3_source, _ = create_phalanx(
-            height=height3, width=width3, transform=phalanx3_transform
-        )
-        all_actors.append(phalanx3_actor)
-        finger_actors[2].append((phalanx3_actor, phalanx3_transform))
+            height3 = (
+                0.14 if finger_idx == 2 else (0.09 if finger_idx == 4 else 0.12)
+            )
+            width3 = 0.1
+            phalanx3_transform = vtkTransform()
+            phalanx3_transform.SetInput(joint2_transform)
+            offset = joint_radius + height3 / 2 - 0.002
+            transform(phalanx3_transform, translate=(0.0, offset, 0.0))
+            phalanx3_actor, phalanx3_source, _ = create_phalanx(
+                height=height3, width=width3, transform=phalanx3_transform
+            )
+            all_actors.append(phalanx3_actor)
+            finger_actors[2].append((phalanx3_actor, phalanx3_transform))
 
         # 변환 객체와 액터 리스트에 저장
         joint_transforms.append(finger_joints)
@@ -1430,7 +3204,8 @@ def main():
     # 웹소켓 및 타이머 콜백 설정 제거
 
     print("프로그램 시작: 숫자 키를 눌러 다양한 손 제스처를 테스트하세요.")
-    print("1: 포인팅 제스처, 2: 피스 제스처, 4: 검지 굽히기, 5: 핀치 제스처, 7: 모든 손가락 움직임")
+    print("1: 포인팅 제스처, 2: 피스 제스처, 4: 검지 굽히기, 5: 핀치 제스처, 6: V-spread, 7: 초기화(문제있음)," \
+    "8. Speed Updown, 9. Direction, 10. Twist")
 
     # 초기 렌더링
     render_window.Render()
